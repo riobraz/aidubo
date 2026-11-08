@@ -129,6 +129,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace
 cargo run -p rust-harness -- /path/to/project
 cargo test --workspace
+make bundle   # dist/Rust Harness.app with the bundled, checksummed sidecar
 ```
 
 Useful environment variables: `RUST_HARNESS_PROJECT`,

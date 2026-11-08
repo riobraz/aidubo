@@ -32,7 +32,12 @@ Replies go to the server and unblock the waiting turn; a decline fails the tool
 with the server's message and ends the turn. Nothing is approved on the user's
 behalf, and the window stays responsive while a request is pending.
 
-Not implemented yet: collapsible tool output and packaging.
+**M7 — packaging.** `make bundle` builds `dist/Rust Harness.app` with the
+OpenCode sidecar inside, records and verifies its checksum, and signs it
+(ad-hoc locally; Developer ID and notarization for a release). See
+[Packaging](#packaging).
+
+Not implemented yet: collapsible tool output, Linux packaging, and auto-update.
 
 Sessions are scoped with the canonical project directory (on macOS, `/tmp` is
 stored as `/private/tmp`); a new session is pinned to that directory through the
@@ -44,6 +49,7 @@ the event stream reconnects, so dropped frames cannot leave stale text.
 - Rust stable with the 2024 edition (tested on 1.99)
 - macOS or Linux — GPUI does not officially support Windows
 - OpenCode v2 on `PATH`, or pointed to explicitly
+- Xcode command line tools for macOS packaging (`codesign`, `notarytool`)
 
 ## Run
 
@@ -52,6 +58,35 @@ cargo run -p rust-harness -- /path/to/project
 ```
 
 The first build compiles GPUI and will take a while.
+
+## Packaging
+
+```sh
+make bundle    # dist/Rust Harness.app
+make install   # copies it into /Applications
+```
+
+The bundle contains the release app binary plus the OpenCode sidecar under
+`Contents/Resources/opencode`, with an `opencode.sha256` manifest written next
+to it. The engine verifies that hash before spawning the sidecar; a mismatch
+stops startup with "The bundled OpenCode binary failed its integrity check".
+Developer builds without a manifest skip the check.
+
+Local bundles are ad-hoc signed. For a distributable build, set:
+
+| Variable | Purpose |
+| --- | --- |
+| `SIGN_IDENTITY` | "Developer ID Application" identity; enables hardened runtime and a trusted timestamp |
+| `NOTARY_PROFILE` | `notarytool` keychain profile; notarizes and staples the app |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | notarization credentials instead of a profile |
+| `UNIVERSAL=1` | builds arm64 + x86_64; needs a universal sidecar or `OPENCODE_ARM64_BIN` + `OPENCODE_X86_64_BIN` |
+| `OPENCODE_BIN` | sidecar to bundle (default: `opencode` on `PATH`) |
+| `ARCHIVE=1` | also writes `dist/RustHarness-<version>.zip` and its `.sha256` |
+
+Measured with OpenCode v2.2.6 (x86_64): the app is 265 MB, of which 235 MB is
+the sidecar; the zip is 119 MB. The release workflow builds a bundle for the
+runner architecture on GitHub Actions and signs it when the certificate secrets
+are configured.
 
 ## Keyboard shortcuts
 

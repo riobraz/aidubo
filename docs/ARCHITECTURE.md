@@ -358,14 +358,32 @@ stays in OpenCode's credential store.
 
 ## 10. Packaging
 
-- macOS first: `.app`, sidecar under `Contents/Resources`, hardened runtime,
-  codesign both binaries, notarize.
-- Universal app (arm64 + x86_64) needs a matching sidecar per architecture, or a
-  universal sidecar if OpenCode ships one.
+As built in M7 (2026-11-08), macOS first:
+
+- `scripts/package-macos.sh` (also `make bundle`) builds the release binary and
+  writes `dist/Rust Harness.app` with `Info.plist`, the app in `Contents/MacOS`,
+  and the sidecar in `Contents/Resources/opencode`.
+- The bundler records `opencode.sha256` next to the sidecar. `locate_binary`
+  prefers the bundle and verifies that hash before spawning; a mismatch stops
+  startup. The manifest is written after signing the sidecar (codesign rewrites
+  the Mach-O) and before signing the app (whose seal covers it).
+- Ad-hoc signing by default. `SIGN_IDENTITY` signs nested code first, then the
+  app, with the hardened runtime and a timestamp. There is no App Sandbox: the
+  sidecar must spawn processes and read the project directory.
+- `NOTARY_PROFILE` or `APPLE_ID` + `APPLE_TEAM_ID` + `APPLE_APP_PASSWORD`
+  notarizes with `notarytool`, staples the app, and re-archives it so the zip
+  carries the ticket.
+- `UNIVERSAL=1` builds both Rust targets and `lipo`s the app. The sidecar must
+  already be universal or be supplied as `OPENCODE_ARM64_BIN` and
+  `OPENCODE_X86_64_BIN`; the script refuses a mismatched bundle.
+- A designed icon is optional: drop `packaging/AppIcon.icns` and the script adds
+  `CFBundleIconFile`.
+- Size: the OpenCode v2.2.6 x86_64 sidecar is 235 MB; the app is 265 MB and the
+  compressed zip is 119 MB. The release workflow builds for the runner
+  architecture on GitHub Actions with a pinned `@opencode/cli` and signs when the
+  certificate secrets exist.
 - Linux next (AppImage/deb). Windows is out of scope: GPUI's official docs target
   macOS and Linux.
-- Size is a product decision: GPUI app is small; the OpenCode sidecar is not.
-  Measure it before promising a download size.
 
 ## 11. Testing strategy
 

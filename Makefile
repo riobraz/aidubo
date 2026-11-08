@@ -11,7 +11,7 @@ PROJECT ?= $(CURDIR)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build run test test-fast test-e2e fmt fmt-check clippy check clean
+.PHONY: help build run test test-fast test-e2e fmt fmt-check clippy check bundle install clean
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -43,6 +43,12 @@ clippy: ## Lint with warnings as errors
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
 check: fmt-check clippy ## Format check plus clippy
+
+bundle: ## Build dist/Rust Harness.app with the bundled sidecar (UNIVERSAL=1 for both arches)
+	scripts/package-macos.sh
+
+install: bundle ## Copy the built app into /Applications
+	ditto "$(CURDIR)/dist/Rust Harness.app" "/Applications/Rust Harness.app"
 
 clean: ## Remove build artifacts
 	$(CARGO) clean

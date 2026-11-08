@@ -82,6 +82,7 @@ pub(crate) async fn run(
     shutdown: oneshot::Receiver<()>,
 ) {
     if let Err(message) = run_inner(config, &events, commands, shutdown).await {
+        tracing::debug!(%message, "engine stopped");
         let _ = events.send(EngineEvent::Failed { message }).await;
     }
 }
@@ -100,6 +101,7 @@ async fn run_inner(
     }
 
     let binary = locate::locate_binary(config.binary.as_deref()).map_err(|err| err.to_string())?;
+    tracing::debug!(binary = %binary.display(), "located the OpenCode binary");
     let version = read_version(&binary).await;
     let port = pick_port().map_err(|err| format!("could not reserve a loopback port: {err}"))?;
     let password = random_password();

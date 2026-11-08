@@ -13,6 +13,7 @@ Thanks for taking the time to contribute.
 ```sh
 cargo build --workspace
 cargo run -p rust-harness -- /path/to/project
+make bundle   # dist/Rust Harness.app with the bundled OpenCode sidecar
 ```
 
 The first build compiles GPUI and takes a while. See the README for the
