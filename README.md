@@ -37,6 +37,10 @@ OpenCode sidecar inside, records and verifies its checksum, and signs it
 (ad-hoc locally; Developer ID and notarization for a release). See
 [Packaging](#packaging).
 
+The window uses a custom title bar above the workspace: dragging and
+double-click are handled by the bar, the system keeps the macOS traffic lights,
+and the bar shows the project directory and engine status.
+
 Not implemented yet: collapsible tool output, Linux packaging, and auto-update.
 
 Sessions are scoped with the canonical project directory (on macOS, `/tmp` is

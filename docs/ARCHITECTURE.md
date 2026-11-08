@@ -273,7 +273,11 @@ call, error, notice. Every entry carries its OpenCode part/message ID for upsert
 
 ### 6.3 Views
 
-- **AppShell** — sidebar + transcript + composer; three regions, resizable later.
+- **AppShell** — a custom `TitleBar` sits above the sidebar + transcript +
+  composer row. The bar owns window dragging and double-click (macOS traffic
+  lights are drawn by the system); it shows the app name and project directory
+  on the left and the engine status on the right. The sidebar and transcript
+  remain three regions, resizable later.
 - **SessionList** — grouped, searchable, working/idle/failed indicators.
 - **Transcript** — virtualized list, bottom-anchored; auto-follow only when the
   user is at the bottom ("stick to bottom" toggle).

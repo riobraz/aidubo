@@ -1,0 +1,115 @@
+name: Bug report
+description: Report a reproducible problem in Rust Harness
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Before filing:
+
+        - Search existing issues to avoid duplicates.
+        - Do **not** report security vulnerabilities here; see
+          [SECURITY.md](https://github.com/riobraz/aidubo/blob/main/SECURITY.md).
+        - Remove credentials, prompts, message content, and session data from
+          logs before pasting them.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the problem.
+      placeholder: The session list stays empty after the engine reports "Connected".
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that reliably triggers the problem.
+      placeholder: |
+        1. Run `cargo run -p rust-harness -- /path/to/project`
+        2. Create a session
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact error text or UI state you observed.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Rust Harness version or commit
+      description: Release tag, or the output of `git rev-parse --short HEAD`.
+      placeholder: 0.1.0 or 06966ec
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+        - Other (unsupported)
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      placeholder: macOS 15.1 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: opencode_version
+    attributes:
+      label: OpenCode version
+      description: Output of `opencode --version`.
+      placeholder: 2.2.6
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Run with `RUST_LOG=debug` and paste only the relevant lines.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Screenshots, recordings, or additional context
+      description: Drag images or videos here if they help.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed credentials, prompts, message content, and session data from this report.
+          required: true

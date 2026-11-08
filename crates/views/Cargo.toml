@@ -11,3 +11,6 @@ harness-core.workspace = true
 harness-engine.workspace = true
 harness-protocol.workspace = true
 harness-ui.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui_kit::component::Theme;
+use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
 use harness_engine::{Engine, EngineConfig};
 use harness_views::{CancelOverlays, FocusComposer, NewSession, ToggleTheme, WorkspaceView};
@@ -25,7 +25,7 @@ fn main() {
         let engine = Engine::spawn(EngineConfig::new(project_dir.clone()));
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1120.), px(720.)), cx)),
-            ..Default::default()
+            ..TitleBar::window_options()
         };
 
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {

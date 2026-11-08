@@ -1,0 +1,80 @@
+name: Feature request
+description: Propose a feature or improvement for Rust Harness
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before proposing, check the MVP scope and explicit non-goals in
+        [docs/ARCHITECTURE.md](https://github.com/riobraz/aidubo/blob/main/docs/ARCHITECTURE.md).
+        Non-goals need an ADR before implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve? Describe the current experience.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: The behavior you would like, including the UI and engine boundary if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, including doing nothing.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Where does this fit relative to the MVP?
+      options:
+        - MVP (sessions, transcript, prompts, tools, permissions)
+        - Post-MVP polish (markdown, shortcuts, themes, reconnect UX)
+        - New scope (needs an ADR)
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: areas
+    attributes:
+      label: Affected areas
+      options:
+        - label: Sessions
+        - label: Transcript / streaming
+        - label: Composer / prompts
+        - label: Tools / reasoning / errors
+        - label: Permissions
+        - label: Engine / sidecar lifecycle
+        - label: UI / theme / packaging
+        - label: Documentation / tooling
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, links to OpenCode API documentation, or related issues.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I read the MVP scope and non-goals in docs/ARCHITECTURE.md.
+          required: true

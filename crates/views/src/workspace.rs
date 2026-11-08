@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, Theme as KitTheme, ThemeMode,
+    ActiveTheme as _, Disableable as _, Sizable as _, Theme as KitTheme, ThemeMode, TitleBar,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     text::TextView,
@@ -451,6 +451,58 @@ impl WorkspaceView {
             EngineStatus::Failed { message } => message.clone().into(),
             EngineStatus::Stopped => "The engine has stopped.".into(),
         }
+    }
+
+    /// Project name for the title bar, falling back to the full path when the
+    /// directory has no final component.
+    fn project_name(&self) -> SharedString {
+        self.project_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from(self.project_dir.display().to_string()))
+    }
+
+    /// Window title content: the app and project on the left, engine status on
+    /// the right. The bar itself owns dragging and double-click handling.
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let (label, color) = self.status_badge(theme);
+
+        div()
+            .debug_selector(|| "workspace-title-bar".into())
+            .flex_shrink_0()
+            .child(
+                TitleBar::new()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().child("Rust Harness"))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(theme.muted)
+                                    .child(self.project_name()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pr_3()
+                            .child(status_dot(color))
+                            .child(div().text_xs().text_color(theme.muted).child(label)),
+                    ),
+            )
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1372,9 +1424,62 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &CancelOverlays, _, cx| this.cancel_overlays(cx)))
             .size_full()
             .flex()
+            .flex_col()
             .bg(theme.bg)
             .text_color(theme.text)
-            .child(self.render_sidebar(cx))
-            .child(self.render_main(cx))
+            .child(self.render_title_bar(cx))
+            .child(
+                div()
+                    .debug_selector(|| "workspace-body".into())
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .child(self.render_sidebar(cx))
+                    .child(self.render_main(cx)),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use gpui_kit::component::Theme as KitTheme;
+    use gpui_kit::{Modifiers, TestAppContext, point, px};
+    use harness_engine::{Engine, EngineConfig};
+
+    use super::WorkspaceView;
+
+    #[gpui_kit::test]
+    fn title_bar_is_rendered_above_the_workspace(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(KitTheme::default()));
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-titlebar-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let title_bar = cx
+            .debug_bounds("workspace-title-bar")
+            .expect("the custom title bar is rendered");
+        let content = cx
+            .debug_bounds("workspace-body")
+            .expect("the workspace body is rendered below the title bar");
+
+        assert_eq!(title_bar.origin.y, px(0.));
+        assert_eq!(title_bar.size.height, px(34.));
+        assert!(title_bar.origin.y + title_bar.size.height <= content.origin.y);
+
+        // A click on the bar must go through its mouse handlers without
+        // panicking; the test platform does not implement window dragging.
+        let bar_center = point(px(400.), px(17.));
+        cx.simulate_click(bar_center, Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("workspace-title-bar").is_some());
     }
 }
