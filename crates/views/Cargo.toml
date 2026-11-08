@@ -1,0 +1,13 @@
+[package]
+name = "harness-views"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+harness-core.workspace = true
+harness-engine.workspace = true
+harness-protocol.workspace = true
+harness-ui.workspace = true

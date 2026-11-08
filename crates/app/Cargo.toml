@@ -1,0 +1,17 @@
+[package]
+name = "rust-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rust-harness"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+harness-engine.workspace = true
+harness-views.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
