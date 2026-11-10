@@ -8,3 +8,4 @@ pub(crate) mod permissions;
 pub(crate) mod prompt;
 pub(crate) mod sessions;
 pub(crate) mod transcript;
+pub(crate) mod vcs;

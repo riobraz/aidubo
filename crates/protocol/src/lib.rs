@@ -10,8 +10,10 @@
 //! the client can detect and use it when present.
 
 mod diff;
+mod vcs;
 
 pub use diff::*;
+pub use vcs::*;
 
 use serde::{Deserialize, Serialize};
 

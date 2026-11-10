@@ -53,6 +53,21 @@ pub enum EngineEvent {
     },
     /// A slash command was accepted by the server.
     CommandAccepted { session_id: String },
+    /// The project's working-tree status.
+    VcsStatusLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::VcsFileStatus>, String>,
+    },
+    /// The ref the working tree is compared against.
+    VcsBaseLoaded {
+        request_id: u64,
+        result: Result<Option<harness_protocol::VcsBase>, String>,
+    },
+    /// A repository was initialized.
+    RepoInitialized {
+        request_id: u64,
+        result: Result<(), String>,
+    },
     /// A diff snapshot for the project.
     VcsDiffLoaded {
         request_id: u64,
@@ -484,6 +499,18 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadVcsStatus { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_status() => event(EngineEvent::VcsStatusLoaded { request_id, result }),
+        },
+        EngineCommand::LoadVcsBase { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_base() => event(EngineEvent::VcsBaseLoaded { request_id, result }),
+        },
+        EngineCommand::InitRepo { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_init() => event(EngineEvent::RepoInitialized { request_id, result }),
+        },
         EngineCommand::LoadVcsDiff {
             request_id,
             mode,

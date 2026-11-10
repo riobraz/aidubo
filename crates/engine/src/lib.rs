@@ -118,6 +118,18 @@ pub enum EngineCommand {
         context: Option<String>,
         untracked: String,
     },
+    /// Load the project's working-tree status.
+    LoadVcsStatus {
+        request_id: u64,
+    },
+    /// Load the ref the working tree is compared against.
+    LoadVcsBase {
+        request_id: u64,
+    },
+    /// Initialize a repository in the project directory.
+    InitRepo {
+        request_id: u64,
+    },
     /// Load the files a session changed.
     LoadSessionDiff {
         request_id: u64,
@@ -238,6 +250,21 @@ impl Engine {
             session_id: id.into(),
             agent: agent.into(),
         })
+    }
+
+    /// Load the project's working-tree status.
+    pub fn load_vcs_status(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadVcsStatus { request_id })
+    }
+
+    /// Load the ref the working tree is compared against.
+    pub fn load_vcs_base(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadVcsBase { request_id })
+    }
+
+    /// Initialize a git repository in the project directory.
+    pub fn init_repo(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::InitRepo { request_id })
     }
 
     /// Load the project's diff. `mode` is `working`, `branch`, or `committed`.

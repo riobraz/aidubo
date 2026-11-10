@@ -11,6 +11,7 @@ mod sessions;
 mod status;
 mod transcript;
 mod util;
+mod vcs;
 
 pub use composer::*;
 pub use diff::*;
@@ -19,6 +20,7 @@ pub use sessions::*;
 pub use status::*;
 pub use transcript::*;
 pub use util::*;
+pub use vcs::*;
 
 #[cfg(test)]
 mod tests;
