@@ -55,7 +55,7 @@
         "T0"
       ],
       "e2e": "tests/M9-01.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M9-02",

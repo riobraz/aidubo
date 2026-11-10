@@ -16,7 +16,8 @@ use tokio::sync::oneshot;
 
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, ExecutionOutcome, FileDiff, FileEntry,
-    ModelInfo, ModelRef, PermissionReply, PromptRequest, SkillInfo, StreamEvent,
+    InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply, PromptRequest, SkillInfo,
+    StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -66,6 +67,21 @@ pub enum EngineCommand {
     },
     DeleteSession {
         id: String,
+    },
+    /// Reload a session's inbox.
+    LoadInbox {
+        session_id: String,
+    },
+    /// Remove a queued prompt.
+    CancelInbox {
+        session_id: String,
+        inbox_id: String,
+    },
+    /// Change a queued prompt's delivery.
+    SetInboxDelivery {
+        session_id: String,
+        inbox_id: String,
+        delivery: InboxDelivery,
     },
     /// Fork a session before a message.
     ForkSession {
@@ -215,6 +231,35 @@ impl Engine {
     /// Delete a session.
     pub fn delete_session(&self, id: impl Into<String>) -> bool {
         self.send(EngineCommand::DeleteSession { id: id.into() })
+    }
+
+    /// Reload a session's inbox.
+    pub fn load_inbox(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::LoadInbox {
+            session_id: id.into(),
+        })
+    }
+
+    /// Remove a queued prompt.
+    pub fn cancel_inbox(&self, id: impl Into<String>, inbox_id: impl Into<String>) -> bool {
+        self.send(EngineCommand::CancelInbox {
+            session_id: id.into(),
+            inbox_id: inbox_id.into(),
+        })
+    }
+
+    /// Change a queued prompt's delivery.
+    pub fn set_inbox_delivery(
+        &self,
+        id: impl Into<String>,
+        inbox_id: impl Into<String>,
+        delivery: InboxDelivery,
+    ) -> bool {
+        self.send(EngineCommand::SetInboxDelivery {
+            session_id: id.into(),
+            inbox_id: inbox_id.into(),
+            delivery,
+        })
     }
 
     /// Fork a session before a message (or the whole session).

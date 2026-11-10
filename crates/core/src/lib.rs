@@ -6,6 +6,7 @@
 
 mod composer;
 mod diff;
+mod inbox;
 mod permissions;
 mod sessions;
 mod status;
@@ -15,6 +16,7 @@ mod vcs;
 
 pub use composer::*;
 pub use diff::*;
+pub use inbox::*;
 pub use permissions::*;
 pub use sessions::*;
 pub use status::*;

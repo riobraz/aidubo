@@ -47,11 +47,16 @@ Last updated: 2026-11-10
   forks before the second user message (boundary verified), plus a GPUI test
   that the forked session is upserted and selected.
 
+- 2026-11-10 — **M9-01 done.** Inbox wire types, `InboxStore` (5 tests),
+  `LoadInbox`/`CancelInbox`/`SetInboxDelivery`, API methods, queue strip above
+  the composer, queue delivery while a turn is running; e2e sends a prompt
+  behind a running turn, finds it in the inbox and cancels it.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- Next: M9-01 (inbox), M9-05 (forms), M9-03 (revert), M9-04 (compaction),
-  M9-06 (usage), then integrations, automation, PTY, distribution and projects.
+- Next: M9-05 (forms), M9-03 (revert), M9-04 (compaction), M9-06 (usage),
+  then integrations, automation, PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

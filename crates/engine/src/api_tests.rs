@@ -74,6 +74,7 @@ fn receive(receiver: Receiver<String>) -> String {
 async fn prompt_posts_files_agents_and_skills() {
     let (port, receiver) = serve_once("200 OK", r#"{"data":{"id":"user_1","sessionID":"s1"}}"#);
     let request = PromptRequest {
+        delivery: None,
         text: "read @src/main.rs".into(),
         files: vec![PromptFile {
             uri: "file:///tmp/p/src/main.rs".into(),

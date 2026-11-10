@@ -41,6 +41,11 @@ pub enum EngineEvent {
     SessionRenamed { id: String, title: String },
     /// A session was deleted on the server.
     SessionDeleted { id: String },
+    /// The session's inbox snapshot.
+    InboxLoaded {
+        session_id: String,
+        items: Vec<harness_protocol::InboxInfo>,
+    },
     /// The server forked a session.
     SessionForked { session: Session },
     /// A session's message history snapshot.
@@ -371,6 +376,46 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadInbox { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.inbox(&session_id) => match result {
+                Ok(items) => event(EngineEvent::InboxLoaded { session_id, items }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not load the inbox: {message}"),
+                }),
+            },
+        },
+        EngineCommand::CancelInbox {
+            session_id,
+            inbox_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                api.cancel_inbox(&session_id, &inbox_id).await?;
+                api.inbox(&session_id).await
+            } => match result {
+                Ok(items) => event(EngineEvent::InboxLoaded { session_id, items }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not cancel the prompt: {message}"),
+                }),
+            },
+        },
+        EngineCommand::SetInboxDelivery {
+            session_id,
+            inbox_id,
+            delivery,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                api.set_inbox_delivery(&session_id, &inbox_id, delivery).await?;
+                api.inbox(&session_id).await
+            } => match result {
+                Ok(items) => event(EngineEvent::InboxLoaded { session_id, items }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not change the delivery: {message}"),
+                }),
+            },
+        },
         EngineCommand::ForkSession { session_id, before } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.fork(&session_id, before) => event(match result {

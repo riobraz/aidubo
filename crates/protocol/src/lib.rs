@@ -10,9 +10,11 @@
 //! the client can detect and use it when present.
 
 mod diff;
+mod inbox;
 mod vcs;
 
 pub use diff::*;
+pub use inbox::*;
 pub use vcs::*;
 
 use serde::{Deserialize, Serialize};
@@ -487,6 +489,8 @@ pub struct SkillAttachment {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PromptRequest {
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<InboxDelivery>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<PromptFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1035,6 +1039,7 @@ mod tests {
     fn prompt_request_serializes_attachments() {
         let request = PromptRequest {
             text: "read @README.md and $opencode".into(),
+            delivery: None,
             files: vec![PromptFile {
                 uri: "file:///tmp/README.md".into(),
                 source: Some(FileSource::Uri {

@@ -801,6 +801,7 @@ fn attachments_and_session_selection_reach_the_server() {
     let path = project.join("notes.txt");
     let uri = format!("file://{}", path.to_string_lossy());
     let request = PromptRequest {
+        delivery: None,
         text: "read @notes.txt".into(),
         files: vec![PromptFile {
             uri: uri.clone(),

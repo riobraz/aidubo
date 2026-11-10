@@ -11,14 +11,15 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, ParsedDiff, PermissionQueue,
-    PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft, SNIPPETS, SessionStore,
-    ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms, parse_patch,
+    Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, InboxStore, ParsedDiff,
+    PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft, SNIPPETS,
+    SessionStore, ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms, parse_patch,
     path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
-    AgentInfo, CommandInfo, FileDiff, ModelInfo, PermissionRequest, Session, SkillInfo,
+    AgentInfo, CommandInfo, FileDiff, InboxDelivery, ModelInfo, PermissionRequest, Session,
+    SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
 
@@ -105,6 +106,7 @@ pub struct WorkspaceView {
     pending_delete: Option<String>,
     transcript: TranscriptStore,
     permissions: PermissionQueue,
+    inbox: InboxStore,
     /// The request whose reply is in flight; its buttons stay disabled.
     permission_in_flight: Option<String>,
     /// Whether the live event stream is currently open.
@@ -192,6 +194,7 @@ impl WorkspaceView {
             pending_delete: None,
             transcript: TranscriptStore::default(),
             permissions: PermissionQueue::default(),
+            inbox: InboxStore::default(),
             permission_in_flight: None,
             stream_connected: false,
             composer,
@@ -249,6 +252,9 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::InboxLoaded { session_id, items } => {
+                self.inbox.replace(&session_id, items);
+            }
             EngineEvent::SessionForked { session } => {
                 let id = session.id.clone();
                 self.sessions.upsert(session);
@@ -268,7 +274,9 @@ impl WorkspaceView {
                 self.transcript.begin(&id);
                 self.engine.load_transcript(id.clone());
                 self.permissions.begin(&id);
-                self.engine.load_permissions(id);
+                self.engine.load_permissions(id.clone());
+                self.inbox.begin(&id);
+                self.engine.load_inbox(id);
             }
             EngineEvent::SessionRenamed { id, title } => {
                 self.sessions.rename(&id, title);
@@ -295,6 +303,7 @@ impl WorkspaceView {
                 session_id,
                 message,
             } => {
+                self.engine.load_inbox(session_id.clone());
                 self.transcript.accept_prompt(
                     &session_id,
                     &message.id,
@@ -461,6 +470,7 @@ impl WorkspaceView {
             None => {
                 self.transcript = TranscriptStore::default();
                 self.permissions = PermissionQueue::default();
+                self.inbox = InboxStore::default();
                 self.permission_in_flight = None;
             }
         }
@@ -932,7 +942,13 @@ impl WorkspaceView {
 
         self.error = None;
         let accepted = match &send {
-            DraftSend::Prompt(request) => self.engine.send_prompt(id, request.clone()),
+            DraftSend::Prompt(request) => {
+                let mut request = request.clone();
+                if self.transcript.is_busy() {
+                    request.delivery = Some(InboxDelivery::Queue);
+                }
+                self.engine.send_prompt(id, request)
+            }
             DraftSend::Command(request) => self.engine.run_command(id, request.clone()),
         };
         if accepted {
@@ -1007,6 +1023,57 @@ impl WorkspaceView {
             .filter(|name| !name.is_empty())
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from(self.project_dir.display().to_string()))
+    }
+
+    fn render_inbox(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut strip = div()
+            .id("inbox-strip")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .bg(theme.surface)
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(format!("{} queued", self.inbox.len())),
+            );
+        for item in self.inbox.items() {
+            let inbox_id = item.id.clone();
+            strip = strip.child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().text_xs().child(if item.text.is_empty() {
+                        item.kind.clone()
+                    } else {
+                        item.text.clone()
+                    }))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("inbox-cancel-{inbox_id}")))
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(theme.danger))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(session) =
+                                    this.sessions.selected_id().map(str::to_owned)
+                                {
+                                    this.engine.cancel_inbox(session, inbox_id.clone());
+                                }
+                                cx.notify();
+                            }))
+                            .child("×"),
+                    ),
+            );
+        }
+        strip
     }
 
     fn render_changes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1564,6 +1631,9 @@ impl WorkspaceView {
             pane = pane.child(self.permission_sheet(request, theme, cx));
         }
 
+        if !self.inbox.is_empty() {
+            pane = pane.child(self.render_inbox(theme, cx));
+        }
         pane.child(self.composer_bar(theme, cx))
     }
 
