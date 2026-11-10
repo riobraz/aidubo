@@ -252,6 +252,9 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::FormsLoaded { .. }
+            | EngineEvent::FormSettled { .. }
+            | EngineEvent::FormError { .. } => {}
             EngineEvent::InboxLoaded { session_id, items } => {
                 self.inbox.replace(&session_id, items);
             }

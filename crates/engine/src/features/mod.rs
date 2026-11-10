@@ -4,6 +4,7 @@
 pub(crate) mod catalogs;
 pub(crate) mod diff;
 pub(crate) mod files;
+pub(crate) mod form;
 pub(crate) mod inbox;
 pub(crate) mod permissions;
 pub(crate) mod prompt;

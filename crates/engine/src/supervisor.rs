@@ -41,6 +41,15 @@ pub enum EngineEvent {
     SessionRenamed { id: String, title: String },
     /// A session was deleted on the server.
     SessionDeleted { id: String },
+    /// The session's pending forms.
+    FormsLoaded {
+        session_id: String,
+        forms: Vec<harness_protocol::FormInfo>,
+    },
+    /// A form was answered or dismissed.
+    FormSettled { form_id: String },
+    /// A form operation failed.
+    FormError { message: String },
     /// The session's inbox snapshot.
     InboxLoaded {
         session_id: String,
@@ -376,6 +385,40 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadForms { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.forms(&session_id) => match result {
+                Ok(forms) => event(EngineEvent::FormsLoaded { session_id, forms }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not load forms: {message}"),
+                }),
+            },
+        },
+        EngineCommand::ReplyForm {
+            session_id,
+            form_id,
+            answer,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.reply_form(&session_id, &form_id, answer) => match result {
+                Ok(()) => event(EngineEvent::FormSettled { form_id }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not answer the form: {message}"),
+                }),
+            },
+        },
+        EngineCommand::DismissForm {
+            session_id,
+            form_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.dismiss_form(&session_id, &form_id) => match result {
+                Ok(()) => event(EngineEvent::FormSettled { form_id }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not dismiss the form: {message}"),
+                }),
+            },
+        },
         EngineCommand::LoadInbox { session_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.inbox(&session_id) => match result {

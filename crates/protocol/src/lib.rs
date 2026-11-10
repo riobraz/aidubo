@@ -10,10 +10,12 @@
 //! the client can detect and use it when present.
 
 mod diff;
+mod form;
 mod inbox;
 mod vcs;
 
 pub use diff::*;
+pub use form::*;
 pub use inbox::*;
 pub use vcs::*;
 

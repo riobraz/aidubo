@@ -16,8 +16,8 @@ use tokio::sync::oneshot;
 
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, ExecutionOutcome, FileDiff, FileEntry,
-    InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply, PromptRequest, SkillInfo,
-    StreamEvent,
+    FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply, PromptRequest,
+    SkillInfo, StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -67,6 +67,21 @@ pub enum EngineCommand {
     },
     DeleteSession {
         id: String,
+    },
+    /// Reload a session's pending forms.
+    LoadForms {
+        session_id: String,
+    },
+    /// Answer a form.
+    ReplyForm {
+        session_id: String,
+        form_id: String,
+        answer: serde_json::Value,
+    },
+    /// Dismiss a form.
+    DismissForm {
+        session_id: String,
+        form_id: String,
     },
     /// Reload a session's inbox.
     LoadInbox {
@@ -231,6 +246,35 @@ impl Engine {
     /// Delete a session.
     pub fn delete_session(&self, id: impl Into<String>) -> bool {
         self.send(EngineCommand::DeleteSession { id: id.into() })
+    }
+
+    /// Reload a session's pending forms.
+    pub fn load_forms(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::LoadForms {
+            session_id: id.into(),
+        })
+    }
+
+    /// Answer a form.
+    pub fn reply_form(
+        &self,
+        id: impl Into<String>,
+        form_id: impl Into<String>,
+        answer: serde_json::Value,
+    ) -> bool {
+        self.send(EngineCommand::ReplyForm {
+            session_id: id.into(),
+            form_id: form_id.into(),
+            answer,
+        })
+    }
+
+    /// Dismiss a form.
+    pub fn dismiss_form(&self, id: impl Into<String>, form_id: impl Into<String>) -> bool {
+        self.send(EngineCommand::DismissForm {
+            session_id: id.into(),
+            form_id: form_id.into(),
+        })
     }
 
     /// Reload a session's inbox.

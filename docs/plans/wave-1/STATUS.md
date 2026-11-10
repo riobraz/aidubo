@@ -57,11 +57,16 @@ Last updated: 2026-11-10
   secrets, URL userinfo, home path). 7 tests, including a report with a secret
   in an error.
 
+- 2026-11-10 — **M9-05 data layer.** `FormInfo`/`FormField`/`FormReplyRequest`
+  (3 protocol tests), `FormStore` with required-field gating, unknown-kind
+  exclusion and answer building (4 core tests), `LoadForms`/`ReplyForm`/
+  `DismissForm` commands, events and API. The form card UI and the e2e remain.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- Next: M9-05 (forms), M9-03 (revert), M9-04 (compaction), M9-06 (usage),
-  then integrations, automation, PTY, distribution and projects.
+- M9-05: form card UI + e2e, then M9-03, M9-04, M9-06, integrations,
+  automation, PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
