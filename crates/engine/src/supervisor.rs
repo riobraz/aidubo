@@ -21,7 +21,7 @@ use crate::events;
 use crate::{CatalogData, EngineCommand, EngineConfig, locate};
 
 /// Lifecycle events and command results emitted by the supervisor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
     /// The child has been spawned and is being probed.
     Starting { port: u16 },

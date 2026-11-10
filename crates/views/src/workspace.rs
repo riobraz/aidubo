@@ -2851,6 +2851,8 @@ mod tests {
                     updated: 10,
                 },
                 location: None,
+                tokens: None,
+                cost: None,
             }]);
             view.apply(harness_engine::EngineEvent::SessionForked {
                 session: harness_protocol::Session {
@@ -2864,6 +2866,8 @@ mod tests {
                         updated: 20,
                     },
                     location: None,
+                    tokens: None,
+                    cost: None,
                 },
             });
             assert_eq!(view.sessions.selected_id(), Some("ses_2"));

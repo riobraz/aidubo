@@ -29,8 +29,29 @@ pub struct Envelope<T> {
     pub data: T,
 }
 
+/// Token counts for one session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub reasoning: f64,
+    #[serde(default)]
+    pub cache: TokenCache,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct TokenCache {
+    #[serde(default)]
+    pub read: f64,
+    #[serde(default)]
+    pub write: f64,
+}
+
 /// A session as returned by `GET /api/session`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Session {
     pub id: String,
     #[serde(default)]
@@ -45,6 +66,10 @@ pub struct Session {
     pub time: SessionTime,
     #[serde(default)]
     pub location: Option<SessionLocation>,
+    #[serde(default)]
+    pub tokens: Option<TokenUsage>,
+    #[serde(default)]
+    pub cost: Option<f64>,
 }
 
 /// Timestamps attached to a session, in epoch milliseconds.
@@ -774,6 +799,19 @@ pub enum ExecutionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_parses_tokens_and_cost() {
+        let json = r#"{"id":"s1","cost":0.42,"tokens":{"input":10,"output":5,"reasoning":2,"cache":{"read":3,"write":1}}}"#;
+        let session: Session = serde_json::from_str(json).expect("session");
+        let tokens = session.tokens.expect("tokens");
+        assert_eq!(tokens.input, 10.0);
+        assert_eq!(tokens.cache.read, 3.0);
+        assert_eq!(session.cost, Some(0.42));
+        let bare: Session = serde_json::from_str(r#"{"id":"s2"}"#).expect("bare");
+        assert!(bare.tokens.is_none());
+        assert!(bare.cost.is_none());
+    }
 
     #[test]
     fn fork_request_serializes_before_and_omits_none() {

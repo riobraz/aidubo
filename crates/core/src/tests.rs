@@ -16,6 +16,8 @@ fn session(id: &str, updated: i64) -> Session {
             updated,
         },
         location: None,
+        tokens: None,
+        cost: None,
     }
 }
 
