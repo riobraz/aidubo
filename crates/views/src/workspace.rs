@@ -343,6 +343,7 @@ impl WorkspaceView {
                 }
             },
             EngineEvent::Stream(event) => match event {
+                StreamEvent::FilesystemChanged => self.on_filesystem_changed(),
                 StreamEvent::PermissionAsked { request } => {
                     self.permissions.push(request);
                 }
@@ -577,6 +578,14 @@ impl WorkspaceView {
         self.vcs_request += 1;
         self.engine.load_vcs_status(self.vcs_request);
         self.engine.load_vcs_base(self.vcs_request);
+    }
+
+    fn on_filesystem_changed(&mut self) {
+        let now = now_ms();
+        if now.saturating_sub(self.vcs.refreshed_at()) < 250 {
+            return;
+        }
+        self.request_vcs_status();
     }
 
     fn request_vcs_diff(&mut self) {

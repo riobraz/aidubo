@@ -424,7 +424,9 @@ impl TranscriptStore {
             }
             // Permissions are session state, not transcript state; the view
             // tracks them in a PermissionQueue.
-            StreamEvent::PermissionAsked { .. } | StreamEvent::PermissionReplied { .. } => false,
+            StreamEvent::PermissionAsked { .. }
+            | StreamEvent::PermissionReplied { .. }
+            | StreamEvent::FilesystemChanged => false,
         }
     }
 

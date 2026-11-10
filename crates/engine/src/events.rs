@@ -260,6 +260,7 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
                 outcome: ExecutionOutcome::Interrupted,
             }
         }
+        "filesystem.changed" => StreamEvent::FilesystemChanged,
         "session.step.started" => {
             let data: StepStartedData = serde_json::from_value(data).ok()?;
             StreamEvent::AssistantStarted {

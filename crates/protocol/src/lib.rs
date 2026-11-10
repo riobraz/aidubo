@@ -717,6 +717,9 @@ pub enum StreamEvent {
         request_id: String,
         reply: PermissionReply,
     },
+    /// The project's files changed on disk. The payload is not needed: the
+    /// view refreshes its own snapshots.
+    FilesystemChanged,
 }
 
 impl StreamEvent {
@@ -740,6 +743,7 @@ impl StreamEvent {
             | Self::ToolFailed { session_id, .. }
             | Self::PermissionReplied { session_id, .. } => session_id,
             Self::PermissionAsked { request } => &request.session_id,
+            Self::FilesystemChanged => "",
         }
     }
 }
