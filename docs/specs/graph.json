@@ -336,7 +336,7 @@
         "E0"
       ],
       "e2e": "app/tests/diagnostics.rs (--diagnostics)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M10-03",

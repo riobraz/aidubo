@@ -52,6 +52,11 @@ Last updated: 2026-11-10
   the composer, queue delivery while a turn is running; e2e sends a prompt
   behind a running turn, finds it in the inbox and cancels it.
 
+- 2026-11-10 — **M16-04 done.** `--diagnostics` prints a report; every field
+  goes through redaction (Authorization, Bearer/Basic, provider keys, query
+  secrets, URL userinfo, home path). 7 tests, including a report with a secret
+  in an error.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).

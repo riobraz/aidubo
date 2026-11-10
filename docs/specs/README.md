@@ -220,7 +220,7 @@ Update this table when a node closes.
 | M16-01 linux-packaging | 1 | ready |
 | M16-02 updates | 1 | ready |
 | M16-03 session-transfer | 1 | ready |
-| M16-04 diagnostics | 1 | ready |
+| M16-04 diagnostics | 1 | done |
 
 ## 8. What is deliberately not a node
 

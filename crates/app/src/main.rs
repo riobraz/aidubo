@@ -1,5 +1,7 @@
 //! Rust Harness — M1 composition root.
 
+mod diagnostics;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -9,6 +11,11 @@ use harness_engine::{Engine, EngineConfig};
 use harness_views::{CancelOverlays, FocusComposer, NewSession, ToggleTheme, WorkspaceView};
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--diagnostics") {
+        print_diagnostics();
+        return;
+    }
+
     init_tracing();
 
     let project_dir = resolve_project_dir();
@@ -86,4 +93,37 @@ fn init_tracing() {
 
 fn autoquit_ms() -> Option<u64> {
     std::env::var("RUST_HARNESS_AUTOQUIT_MS").ok()?.parse().ok()
+}
+
+fn print_diagnostics() {
+    let opencode = harness_engine::locate_binary(None)
+        .map(|path| {
+            let version = std::process::Command::new(&path)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .unwrap_or_else(|| "unknown".into());
+            format!("{} ({version})", path.display())
+        })
+        .unwrap_or_else(|_| "not found".into());
+    let home = std::env::var("HOME").ok();
+    let data_dir = home
+        .as_ref()
+        .map(|home| format!("{home}/Library/Application Support/Rust Harness"))
+        .unwrap_or_default();
+    print!(
+        "{}",
+        diagnostics::render(&diagnostics::ReportInput {
+            app_version: env!("CARGO_PKG_VERSION"),
+            target: &format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+            os: std::env::consts::OS,
+            opencode: &opencode,
+            engine: "not started (diagnostics mode)",
+            data_dir: &data_dir,
+            errors: &[],
+            home: home.as_deref(),
+        })
+    );
 }
