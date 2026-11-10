@@ -14,7 +14,7 @@ use harness_core::{
     Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, ParsedDiff, PermissionQueue,
     PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft, SNIPPETS, SessionStore,
     ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms, parse_patch,
-    path_to_file_uri, relative_time,
+    path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -126,6 +126,8 @@ pub struct WorkspaceView {
     diff_files: Vec<FileDiff>,
     diff: ParsedDiff,
     diff_rows: Vec<DiffRow>,
+    selected_file: Option<usize>,
+    diff_scroll: ScrollHandle,
     vcs_request: u64,
     _events_task: Task<()>,
 }
@@ -205,6 +207,8 @@ impl WorkspaceView {
             diff_files: Vec::new(),
             diff: ParsedDiff::default(),
             diff_rows: Vec::new(),
+            selected_file: None,
+            diff_scroll: ScrollHandle::new(),
             vcs_request: 0,
             _events_task: events_task,
         }
@@ -596,7 +600,10 @@ impl WorkspaceView {
 
     fn rebuild_diff(&mut self) {
         let mut all = ParsedDiff::default();
-        for diff in &self.diff_files {
+        for (index, diff) in self.diff_files.iter().enumerate() {
+            if self.selected_file.is_some_and(|selected| selected != index) {
+                continue;
+            }
             let one = parse_patch(diff);
             all.truncated |= one.truncated;
             all.binary |= one.binary;
@@ -604,6 +611,17 @@ impl WorkspaceView {
         }
         self.diff_rows = flatten(&all, &[]);
         self.diff = all;
+    }
+
+    fn select_file(&mut self, name: &str) {
+        let index = self.diff_files.iter().position(|diff| diff.file == name);
+        self.selected_file = match (index, self.selected_file) {
+            (Some(index), Some(selected)) if index == selected => None,
+            (Some(index), _) => Some(index),
+            (None, _) => None,
+        };
+        self.diff_scroll = ScrollHandle::new();
+        self.rebuild_diff();
     }
 
     fn cancel_overlays(&mut self, cx: &mut Context<Self>) {
@@ -1030,12 +1048,27 @@ impl WorkspaceView {
             );
         } else {
             for file in self.vcs.files() {
+                let name = file.file.clone();
+                let selected = self
+                    .selected_file
+                    .and_then(|index| self.diff_files.get(index))
+                    .is_some_and(|diff| diff.file == name);
                 list = list.child(
                     div()
+                        .id(SharedString::from(format!("changes-file-{name}")))
                         .px_3()
                         .py_1()
                         .flex()
                         .justify_between()
+                        .bg(if selected {
+                            theme.border
+                        } else {
+                            theme.surface
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_file(&name);
+                            cx.notify();
+                        }))
                         .child(div().text_xs().child(file.file.clone()))
                         .child(
                             div()
@@ -1048,15 +1081,25 @@ impl WorkspaceView {
         }
         panel = panel.child(list);
 
+        let offset: f32 = self.diff_scroll.offset().y.into();
+        let row_height = 18.0;
+        let top = if offset < 0.0 {
+            (-offset / row_height) as usize
+        } else {
+            0
+        };
+        let visible = visible_range(self.diff_rows.len(), top, 50, 8);
+
         let mut body = div()
             .id("changes-diff")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.diff_scroll)
             .flex()
             .flex_col()
             .pt_1();
-        for row in self.diff_rows.iter().take(600) {
+        for row in &self.diff_rows[visible] {
             let element = match row {
                 DiffRow::FileHeader { path, .. } => {
                     div().px_2().pt_2().text_xs().child(path.clone())
@@ -2310,6 +2353,39 @@ mod tests {
     use harness_engine::{Engine, EngineConfig};
 
     use super::WorkspaceView;
+
+    fn diff_file(name: &str) -> harness_protocol::FileDiff {
+        harness_protocol::FileDiff {
+            file: name.into(),
+            patch: "diff --git a/a b/a\n@@ -1 +1 @@\n-a\n+b\n".into(),
+            additions: 1,
+            deletions: 1,
+            status: "modified".into(),
+            more: false,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn changes_selection_filters_the_diff_rows(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(KitTheme::default()));
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-diff-panel-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+
+        view.update(cx, |view, _| {
+            view.diff_files = vec![diff_file("a.txt"), diff_file("b.txt")];
+            view.rebuild_diff();
+            assert_eq!(view.diff_rows.len(), 8);
+            view.select_file("a.txt");
+            assert_eq!(view.diff_rows.len(), 4);
+            view.select_file("a.txt");
+            assert_eq!(view.diff_rows.len(), 8);
+        });
+    }
 
     #[gpui_kit::test]
     fn title_bar_is_rendered_above_the_workspace(cx: &mut TestAppContext) {

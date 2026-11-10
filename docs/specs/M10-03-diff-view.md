@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | blocked (M10-02) |
+| Status | done |
 | Wave | 2 |
 | Size | M |
 | Depends on | M10-02, M10-01 |

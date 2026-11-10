@@ -36,12 +36,17 @@ Last updated: 2026-11-10
   `filesystem.changed`, per-file selection, and row virtualization with
   `visible_range`.
 
+- 2026-11-10 — **M10-01 and M10-03 done.** Per-file selection filters the
+  flattened rows (click selects, second click clears); the diff body uses a
+  `ScrollHandle` and `visible_range` (50 rows + 8 overscan) so only the visible
+  window is built. GPUI test covers the selection toggle.
+
 ## In progress / next
 
-- M10-01 panel: Changes list + branch chip, refresh on `filesystem.changed`.
-- M10-03 renderer: rows from `flatten`/`visible_range`, unified layout.
-- Then M9-02, M9-01, M9-05, M9-03, M9-04, M9-06, then integrations,
-  automation, PTY, distribution and projects.
+- M10 is complete (M10-01, M10-02, M10-03).
+- Next: M9-02 (fork), M9-01 (inbox), M9-05 (forms), M9-03 (revert), M9-04
+  (compaction), M9-06 (usage), then integrations, automation, PTY,
+  distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
