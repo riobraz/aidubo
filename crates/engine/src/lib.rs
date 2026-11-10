@@ -68,6 +68,12 @@ pub enum EngineCommand {
     DeleteSession {
         id: String,
     },
+    /// Create a form. Used by tests and plugins; the app never creates one.
+    CreateForm {
+        session_id: String,
+        title: String,
+        fields: serde_json::Value,
+    },
     /// Reload a session's pending forms.
     LoadForms {
         session_id: String,
@@ -246,6 +252,20 @@ impl Engine {
     /// Delete a session.
     pub fn delete_session(&self, id: impl Into<String>) -> bool {
         self.send(EngineCommand::DeleteSession { id: id.into() })
+    }
+
+    /// Create a form. Exposed for tests and plugins; the app never calls it.
+    pub fn create_form(
+        &self,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        fields: serde_json::Value,
+    ) -> bool {
+        self.send(EngineCommand::CreateForm {
+            session_id: id.into(),
+            title: title.into(),
+            fields,
+        })
     }
 
     /// Reload a session's pending forms.

@@ -46,6 +46,8 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// A form was created (tests and plugins).
+    FormCreated { form: harness_protocol::FormInfo },
     /// A form was answered or dismissed.
     FormSettled { form_id: String },
     /// A form operation failed.
@@ -385,6 +387,19 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::CreateForm {
+            session_id,
+            title,
+            fields,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.create_form(&session_id, title, fields) => match result {
+                Ok(form) => event(EngineEvent::FormCreated { form }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not create the form: {message}"),
+                }),
+            },
+        },
         EngineCommand::LoadForms { session_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.forms(&session_id) => match result {

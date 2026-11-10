@@ -268,6 +268,11 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::FormCreated { form } => {
+                let mut forms = self.forms.forms().to_vec();
+                forms.push(form);
+                self.forms.replace(forms);
+            }
             EngineEvent::FormsLoaded { forms, .. } => {
                 self.forms.replace(forms);
                 self.form_key = None;

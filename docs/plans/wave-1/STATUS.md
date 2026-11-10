@@ -67,10 +67,14 @@ Last updated: 2026-11-10
   until `can_reply`, Dismiss cancels. Events `FormsLoaded`/`FormSettled`/
   `FormError` are wired; the session reloads forms when it opens.
 
+- 2026-11-10 — **M9-05 done.** `CreateForm` (tests/plugins only) closes the
+  loop: the e2e creates a form with a required field, lists it, answers it and
+  verifies it is settled.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M9-05: form card UI + e2e, then M9-03, M9-04, M9-06, integrations,
+- Next: M9-03 (revert), M9-04 (compaction), M9-06 (usage), integrations,
   automation, PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 

@@ -36,6 +36,24 @@ impl SessionApi {
         Ok(())
     }
 
+    pub async fn create_form(
+        &self,
+        session_id: &str,
+        title: String,
+        fields: serde_json::Value,
+    ) -> Result<FormInfo, String> {
+        let body = serde_json::json!({ "title": title, "fields": fields });
+        let response = self
+            .request(Method::POST, &format!("/api/session/{session_id}/form"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let response = ensure_success(response).await?;
+        let page: Envelope<FormInfo> = response.json().await.map_err(decode_error)?;
+        Ok(page.data)
+    }
+
     pub async fn dismiss_form(&self, session_id: &str, form_id: &str) -> Result<(), String> {
         let response = self
             .request(
