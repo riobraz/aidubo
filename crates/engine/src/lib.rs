@@ -67,6 +67,11 @@ pub enum EngineCommand {
     DeleteSession {
         id: String,
     },
+    /// Fork a session before a message.
+    ForkSession {
+        session_id: String,
+        before: Option<String>,
+    },
     /// Load a session's message history.
     LoadTranscript {
         session_id: String,
@@ -210,6 +215,14 @@ impl Engine {
     /// Delete a session.
     pub fn delete_session(&self, id: impl Into<String>) -> bool {
         self.send(EngineCommand::DeleteSession { id: id.into() })
+    }
+
+    /// Fork a session before a message (or the whole session).
+    pub fn fork_session(&self, id: impl Into<String>, before: Option<String>) -> bool {
+        self.send(EngineCommand::ForkSession {
+            session_id: id.into(),
+            before,
+        })
     }
 
     /// Load a session's message history.

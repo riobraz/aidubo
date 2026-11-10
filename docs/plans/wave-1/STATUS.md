@@ -41,12 +41,17 @@ Last updated: 2026-11-10
   `ScrollHandle` and `visible_range` (50 rows + 8 overscan) so only the visible
   window is built. GPUI test covers the selection toggle.
 
+- 2026-11-10 — **M9-02 done.** `ForkRequest`, `SessionApi::fork`,
+  `ForkSession` command and `SessionForked` event, `select_newest`; the
+  transcript shows "Fork from here" on user messages; e2e runs two turns and
+  forks before the second user message (boundary verified), plus a GPUI test
+  that the forked session is upserted and selected.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- Next: M9-02 (fork), M9-01 (inbox), M9-05 (forms), M9-03 (revert), M9-04
-  (compaction), M9-06 (usage), then integrations, automation, PTY,
-  distribution and projects.
+- Next: M9-01 (inbox), M9-05 (forms), M9-03 (revert), M9-04 (compaction),
+  M9-06 (usage), then integrations, automation, PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

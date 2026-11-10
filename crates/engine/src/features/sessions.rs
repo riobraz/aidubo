@@ -67,3 +67,19 @@ impl SessionApi {
         Ok(())
     }
 }
+
+impl SessionApi {
+    /// Fork a session before the given message (or the whole session).
+    pub async fn fork(&self, id: &str, before: Option<String>) -> Result<Session, String> {
+        let request = harness_protocol::ForkRequest { before };
+        let response = self
+            .request(Method::POST, &format!("/api/session/{id}/fork"))
+            .json(&request)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let response = ensure_success(response).await?;
+        let envelope: Envelope<Session> = response.json().await.map_err(decode_error)?;
+        Ok(envelope.data)
+    }
+}

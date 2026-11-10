@@ -196,7 +196,7 @@ Update this table when a node closes.
 | T0 e2e-harness | 0 | done |
 | M14-02 vt-model | 0 | done |
 | M9-01 inbox | 1 | ready |
-| M9-02 fork | 1 | ready |
+| M9-02 fork | 1 | done |
 | M9-03 revert | 1 | ready |
 | M9-04 compaction-context | 1 | ready |
 | M9-05 forms | 1 | ready |

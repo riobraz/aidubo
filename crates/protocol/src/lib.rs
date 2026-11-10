@@ -168,6 +168,13 @@ impl CatalogKind {
     }
 }
 
+/// Body for `POST /api/session/{id}/fork`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ForkRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+}
+
 /// The project directory a session belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SessionLocation {
@@ -759,6 +766,17 @@ pub enum ExecutionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_request_serializes_before_and_omits_none() {
+        let with = serde_json::to_string(&ForkRequest {
+            before: Some("msg_1".into()),
+        })
+        .expect("json");
+        assert_eq!(with, r#"{"before":"msg_1"}"#);
+        let without = serde_json::to_string(&ForkRequest::default()).expect("json");
+        assert_eq!(without, "{}");
+    }
 
     #[test]
     fn parses_session_envelope() {

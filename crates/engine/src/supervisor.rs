@@ -41,6 +41,8 @@ pub enum EngineEvent {
     SessionRenamed { id: String, title: String },
     /// A session was deleted on the server.
     SessionDeleted { id: String },
+    /// The server forked a session.
+    SessionForked { session: Session },
     /// A session's message history snapshot.
     TranscriptLoaded {
         session_id: String,
@@ -369,6 +371,15 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::ForkSession { session_id, before } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.fork(&session_id, before) => event(match result {
+                Ok(session) => EngineEvent::SessionForked { session },
+                Err(message) => EngineEvent::CommandFailed {
+                    message: format!("Could not fork the session: {message}"),
+                },
+            }),
+        },
         EngineCommand::DeleteSession { id } => {
             let call_id = id.clone();
             tokio::select! {

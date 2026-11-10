@@ -249,6 +249,15 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::SessionForked { session } => {
+                let id = session.id.clone();
+                self.sessions.upsert(session);
+                self.sessions.select(&id);
+                self.error = None;
+                self.transcript.begin(&id);
+                self.engine.load_transcript(&id);
+                self.engine.load_permissions(&id);
+            }
             EngineEvent::SessionCreated { session } => {
                 let id = session.id.clone();
                 self.sessions.upsert(session);
@@ -577,6 +586,16 @@ impl WorkspaceView {
     }
 
     /// Close transient overlays (title editor, delete confirmation, errors).
+    fn fork_from(&mut self, message_id: String) {
+        let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
+            self.error = Some("Select a session first.".into());
+            return;
+        };
+        if !self.engine.fork_session(&session_id, Some(message_id)) {
+            self.error = Some("The engine is not running.".into());
+        }
+    }
+
     fn request_vcs_status(&mut self) {
         self.vcs.begin_refresh(now_ms());
         self.vcs_request += 1;
@@ -1539,7 +1558,7 @@ impl WorkspaceView {
             pane = pane.child(self.rename_panel(input, theme, cx));
         }
 
-        let mut pane = pane.child(self.transcript_pane(theme));
+        let mut pane = pane.child(self.transcript_pane(theme, cx));
 
         if let Some(request) = self.permissions.front() {
             pane = pane.child(self.permission_sheet(request, theme, cx));
@@ -1674,7 +1693,7 @@ impl WorkspaceView {
         )
     }
 
-    fn transcript_pane(&self, theme: Theme) -> impl IntoElement {
+    fn transcript_pane(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div()
             .id("transcript-list")
             .flex_1()
@@ -1703,7 +1722,7 @@ impl WorkspaceView {
             );
         } else {
             for entry in self.transcript.entries() {
-                list = list.child(self.render_entry(entry, theme));
+                list = list.child(self.render_entry(entry, theme, cx));
             }
         }
 
@@ -1727,14 +1746,35 @@ impl WorkspaceView {
         list
     }
 
-    fn render_entry(&self, entry: &Entry, theme: Theme) -> impl IntoElement {
+    fn render_entry(
+        &self,
+        entry: &Entry,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         match entry {
-            Entry::User { text, .. } => div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_xs().text_color(theme.muted).child("You"))
-                .child(div().min_w_0().text_sm().child(text.clone())),
+            Entry::User { text, .. } => {
+                let message_id = entry.id().to_string();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().text_xs().text_color(theme.muted).child("You"))
+                    .child(div().min_w_0().text_sm().child(text.clone()))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("fork-{message_id}")))
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(theme.accent))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.fork_from(message_id.clone());
+                                cx.notify();
+                            }))
+                            .child("Fork from here"),
+                    )
+            }
             Entry::Assistant(assistant) => {
                 let mut label = String::from("Assistant");
                 if let Some(agent) = &assistant.agent {
@@ -2363,6 +2403,49 @@ mod tests {
             status: "modified".into(),
             more: false,
         }
+    }
+
+    #[gpui_kit::test]
+    fn forked_session_is_selected(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(KitTheme::default()));
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-fork-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+
+        view.update(cx, |view, _| {
+            view.sessions.replace(vec![harness_protocol::Session {
+                id: "ses_1".into(),
+                title: None,
+                project_id: None,
+                agent: None,
+                model: None,
+                time: harness_protocol::SessionTime {
+                    created: 10,
+                    updated: 10,
+                },
+                location: None,
+            }]);
+            view.apply(harness_engine::EngineEvent::SessionForked {
+                session: harness_protocol::Session {
+                    id: "ses_2".into(),
+                    title: None,
+                    project_id: None,
+                    agent: None,
+                    model: None,
+                    time: harness_protocol::SessionTime {
+                        created: 20,
+                        updated: 20,
+                    },
+                    location: None,
+                },
+            });
+            assert_eq!(view.sessions.selected_id(), Some("ses_2"));
+            assert_eq!(view.sessions.len(), 2);
+        });
     }
 
     #[gpui_kit::test]
