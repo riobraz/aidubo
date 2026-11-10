@@ -11,10 +11,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, InboxStore, ParsedDiff,
-    PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft, SNIPPETS,
-    SessionStore, ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms, parse_patch,
-    path_to_file_uri, relative_time, visible_range,
+    Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore, InboxStore,
+    ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft,
+    SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms,
+    parse_patch, path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -107,6 +107,10 @@ pub struct WorkspaceView {
     transcript: TranscriptStore,
     permissions: PermissionQueue,
     inbox: InboxStore,
+    forms: FormStore,
+    form_input: Entity<InputState>,
+    _form_subscription: Subscription,
+    form_key: Option<String>,
     /// The request whose reply is in flight; its buttons stay disabled.
     permission_in_flight: Option<String>,
     /// Whether the live event stream is currently open.
@@ -159,6 +163,14 @@ impl WorkspaceView {
                 .placeholder("Message the agent…")
                 .submit_on_enter(true)
         });
+        let form_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type the answer…"));
+        let form_subscription =
+            cx.subscribe_in(&form_input, window, |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.form_answer_changed(cx);
+                }
+            });
+
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
@@ -195,6 +207,10 @@ impl WorkspaceView {
             transcript: TranscriptStore::default(),
             permissions: PermissionQueue::default(),
             inbox: InboxStore::default(),
+            forms: FormStore::default(),
+            form_input,
+            _form_subscription: form_subscription,
+            form_key: None,
             permission_in_flight: None,
             stream_connected: false,
             composer,
@@ -252,9 +268,12 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
-            EngineEvent::FormsLoaded { .. }
-            | EngineEvent::FormSettled { .. }
-            | EngineEvent::FormError { .. } => {}
+            EngineEvent::FormsLoaded { forms, .. } => {
+                self.forms.replace(forms);
+                self.form_key = None;
+            }
+            EngineEvent::FormSettled { form_id } => self.forms.remove(&form_id),
+            EngineEvent::FormError { message } => self.forms.set_error(message),
             EngineEvent::InboxLoaded { session_id, items } => {
                 self.inbox.replace(&session_id, items);
             }
@@ -279,7 +298,8 @@ impl WorkspaceView {
                 self.permissions.begin(&id);
                 self.engine.load_permissions(id.clone());
                 self.inbox.begin(&id);
-                self.engine.load_inbox(id);
+                self.engine.load_inbox(id.clone());
+                self.engine.load_forms(id);
             }
             EngineEvent::SessionRenamed { id, title } => {
                 self.sessions.rename(&id, title);
@@ -1028,6 +1048,211 @@ impl WorkspaceView {
             .unwrap_or_else(|| SharedString::from(self.project_dir.display().to_string()))
     }
 
+    fn form_answer_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.forms.front() else {
+            return;
+        };
+        let form_id = form.id.clone();
+        let Some(key) = self.form_key.clone() else {
+            return;
+        };
+        let Some(kind) = form
+            .fields
+            .iter()
+            .find(|field| field.key == key)
+            .map(|field| field.kind.clone())
+        else {
+            return;
+        };
+        let value = self.form_input.read(cx).value().to_string();
+        let json = match kind.as_str() {
+            "number" | "integer" => value
+                .trim()
+                .parse::<f64>()
+                .map(|number| serde_json::json!(number))
+                .unwrap_or(serde_json::Value::Null),
+            _ => serde_json::Value::String(value),
+        };
+        self.forms.set_answer(&form_id, &key, json);
+    }
+
+    fn render_form(
+        &self,
+        theme: Theme,
+        form: &harness_protocol::FormInfo,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let form_id = form.id.clone();
+        let ready = self.forms.can_reply(&form_id);
+        let mut card = div()
+            .id("form-card")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .bg(theme.surface)
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(form.title.clone()),
+            );
+
+        for field in &form.fields {
+            if field.hidden {
+                continue;
+            }
+            let key = field.key.clone();
+            let label = field.title.clone().unwrap_or_else(|| field.key.clone());
+            let current = self
+                .forms
+                .value(&form_id, &key)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            match field.kind.as_str() {
+                "boolean" => {
+                    let on = current.as_bool().unwrap_or(false);
+                    let form = form_id.clone();
+                    let key_bool = key.clone();
+                    card = card.child(
+                        div()
+                            .id(SharedString::from(format!("form-bool-{key}")))
+                            .text_xs()
+                            .child(format!("{label}: {}", if on { "yes" } else { "no" }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.forms
+                                    .set_answer(&form, &key_bool, serde_json::json!(!on));
+                                cx.notify();
+                            })),
+                    );
+                }
+                "multiselect" => {
+                    let chosen: Vec<String> = current
+                        .as_array()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut row = div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .text_xs()
+                        .child(format!("{label}:"));
+                    for option in &field.options {
+                        let Some(value) = option.as_str() else {
+                            continue;
+                        };
+                        let selected = chosen.iter().any(|chosen| chosen == value);
+                        let mut next = chosen.clone();
+                        if selected {
+                            next.retain(|chosen| chosen != value);
+                        } else {
+                            next.push(value.to_string());
+                        }
+                        let form = form_id.clone();
+                        let value = value.to_string();
+                        let option_key = key.clone();
+                        row = row.child(
+                            div()
+                                .id(SharedString::from(format!("form-opt-{key}-{value}")))
+                                .px_2()
+                                .bg(if selected { theme.accent } else { theme.border })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let json = serde_json::json!(next.clone());
+                                    this.forms.set_answer(&form, &option_key, json);
+                                    cx.notify();
+                                }))
+                                .child(value),
+                        );
+                    }
+                    card = card.child(row);
+                }
+                "external" => {
+                    card = card.child(div().text_xs().text_color(theme.muted).child(label));
+                }
+                _ => {
+                    let value = current.as_str().unwrap_or("").to_string();
+                    card = card.child(
+                        div()
+                            .id(SharedString::from(format!("form-text-{key}")))
+                            .text_xs()
+                            .child(format!(
+                                "{label}: {}",
+                                if value.is_empty() { "—" } else { &value }
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.form_key = Some(key.clone());
+                                let current = value.clone();
+                                this.form_input.update(cx, |state, cx| {
+                                    state.set_value(current, window, cx);
+                                });
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
+        }
+
+        if self.form_key.is_some() {
+            card = card.child(Input::new(&self.form_input).w_full());
+        }
+
+        let form_reply = form_id.clone();
+        let form_dismiss = form_id.clone();
+        card.child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    div()
+                        .id("form-reply")
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .bg(if ready { theme.accent } else { theme.border })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.forms.can_reply(&form_reply) {
+                                return;
+                            }
+                            let Some(answer) = this.forms.answer(&form_reply) else {
+                                return;
+                            };
+                            let Some(session) = this.sessions.selected_id().map(str::to_owned)
+                            else {
+                                return;
+                            };
+                            this.engine.reply_form(session, form_reply.clone(), answer);
+                            cx.notify();
+                        }))
+                        .child("Reply"),
+                )
+                .child(
+                    div()
+                        .id("form-dismiss")
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let Some(session) = this.sessions.selected_id().map(str::to_owned)
+                            else {
+                                return;
+                            };
+                            this.engine.dismiss_form(session, form_dismiss.clone());
+                            cx.notify();
+                        }))
+                        .child("Dismiss"),
+                ),
+        )
+    }
+
     fn render_inbox(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut strip = div()
             .id("inbox-strip")
@@ -1634,6 +1859,9 @@ impl WorkspaceView {
             pane = pane.child(self.permission_sheet(request, theme, cx));
         }
 
+        if let Some(form) = self.forms.front() {
+            pane = pane.child(self.render_form(theme, form, cx));
+        }
         if !self.inbox.is_empty() {
             pane = pane.child(self.render_inbox(theme, cx));
         }

@@ -3264,6 +3264,7 @@ dependencies = [
  "harness-engine",
  "harness-protocol",
  "harness-ui",
+ "serde_json",
 ]
 
 [[package]]

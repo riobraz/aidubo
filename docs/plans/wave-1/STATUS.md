@@ -60,7 +60,12 @@ Last updated: 2026-11-10
 - 2026-11-10 — **M9-05 data layer.** `FormInfo`/`FormField`/`FormReplyRequest`
   (3 protocol tests), `FormStore` with required-field gating, unknown-kind
   exclusion and answer building (4 core tests), `LoadForms`/`ReplyForm`/
-  `DismissForm` commands, events and API. The form card UI and the e2e remain.
+  `DismissForm` commands, events and API. The e2e remains.
+- 2026-11-10 — **FormCard.** A card above the composer renders the pending
+  form: text/number fields focus a shared input, booleans and multiselect
+  options toggle in place, external fields are read-only, Reply is disabled
+  until `can_reply`, Dismiss cancels. Events `FormsLoaded`/`FormSettled`/
+  `FormError` are wired; the session reloads forms when it opens.
 
 ## In progress / next
 

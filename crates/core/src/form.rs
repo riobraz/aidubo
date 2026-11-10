@@ -41,6 +41,10 @@ impl FormStore {
         self.error.as_deref()
     }
 
+    pub fn value(&self, form_id: &str, key: &str) -> Option<&serde_json::Value> {
+        self.answers.get(form_id)?.get(key)
+    }
+
     pub fn set_answer(&mut self, form_id: &str, key: &str, value: serde_json::Value) {
         self.answers
             .entry(form_id.to_string())
