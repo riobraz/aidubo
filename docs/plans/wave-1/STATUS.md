@@ -29,6 +29,13 @@ Last updated: 2026-11-10
   binary/empty notices, per-file counts, and `visible_range` with overscan
   (3 tests). The GPUI renderer is pending.
 
+- 2026-11-10 — **M10-01 panel / M10-03 renderer (first cut).** Workspace owns
+  `VcsStore` and a parsed diff; the right panel shows the branch, the file list
+  with `+/-`, and the diff rows with colours. Ready loads status/base; a
+  non-empty status loads the working diff. Missing: refresh on
+  `filesystem.changed`, per-file selection, and row virtualization with
+  `visible_range`.
+
 ## In progress / next
 
 - M10-01 panel: Changes list + branch chip, refresh on `filesystem.changed`.
