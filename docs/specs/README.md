@@ -202,7 +202,7 @@ Update this table when a node closes.
 | M9-05 forms | 1 | ready |
 | M9-06 usage | 1 | ready |
 | M10-01 vcs-status | 1 | ready |
-| M10-02 diff-model | 1 | ready |
+| M10-02 diff-model | 1 | done |
 | M10-03 diff-view | 2 | blocked (M10-02) |
 | M11-01 projects | 1 | ready |
 | M11-02 worktrees | 2 | blocked (M11-01) |

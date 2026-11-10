@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | done |
 | Wave | 1 |
 | Size | M |
 | Depends on | T0 |
@@ -26,6 +26,12 @@ binary files, renames, truncation, CRLF, and malformed input.
 `FileDiff.Info` = `{file, patch, additions, deletions, status, more}`.
 `more: true` means the server truncated the patch; `patch` may be empty for a
 binary file. Errors: 404 `MessageNotFound`, 503 `ServiceUnavailable`.
+
+Verified 2026-11-10 on v2.2.6: the server builds its working-tree snapshot from
+its file watcher. Before the first filesystem event after startup, status and
+diff can both be empty even for a modification made before launch. The app
+refreshes on `filesystem.changed` (M10-01); the e2e test touches a file and
+retries until the snapshot includes the change.
 
 ## 3. Protocol
 

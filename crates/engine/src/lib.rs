@@ -15,8 +15,8 @@ use async_channel::{Receiver, Sender};
 use tokio::sync::oneshot;
 
 pub use harness_protocol::{
-    AgentInfo, CatalogKind, CommandInfo, CommandRequest, ExecutionOutcome, FileEntry, ModelInfo,
-    ModelRef, PermissionReply, PromptRequest, SkillInfo, StreamEvent,
+    AgentInfo, CatalogKind, CommandInfo, CommandRequest, ExecutionOutcome, FileDiff, FileEntry,
+    ModelInfo, ModelRef, PermissionReply, PromptRequest, SkillInfo, StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -109,6 +109,22 @@ pub enum EngineCommand {
     /// Reload a session's pending permission requests.
     LoadPermissions {
         session_id: String,
+    },
+    /// Load the project's working-tree, branch, or committed diff.
+    LoadVcsDiff {
+        request_id: u64,
+        mode: String,
+        base: Option<String>,
+        context: Option<String>,
+        untracked: String,
+    },
+    /// Load the files a session changed.
+    LoadSessionDiff {
+        request_id: u64,
+        session_id: String,
+        from: Option<String>,
+        to: Option<String>,
+        context: Option<String>,
     },
     /// Answer a permission request, unblocking the turn.
     ReplyPermission {
@@ -221,6 +237,42 @@ impl Engine {
         self.send(EngineCommand::SetSessionAgent {
             session_id: id.into(),
             agent: agent.into(),
+        })
+    }
+
+    /// Load the project's diff. `mode` is `working`, `branch`, or `committed`.
+    pub fn load_vcs_diff(
+        &self,
+        request_id: u64,
+        mode: impl Into<String>,
+        base: Option<String>,
+        context: Option<String>,
+        untracked: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::LoadVcsDiff {
+            request_id,
+            mode: mode.into(),
+            base,
+            context,
+            untracked: untracked.into(),
+        })
+    }
+
+    /// Load the files a session changed between two messages.
+    pub fn load_session_diff(
+        &self,
+        request_id: u64,
+        session_id: impl Into<String>,
+        from: Option<String>,
+        to: Option<String>,
+        context: Option<String>,
+    ) -> bool {
+        self.send(EngineCommand::LoadSessionDiff {
+            request_id,
+            session_id: session_id.into(),
+            from,
+            to,
+            context,
         })
     }
 

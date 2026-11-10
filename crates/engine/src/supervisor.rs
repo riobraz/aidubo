@@ -53,6 +53,16 @@ pub enum EngineEvent {
     },
     /// A slash command was accepted by the server.
     CommandAccepted { session_id: String },
+    /// A diff snapshot for the project.
+    VcsDiffLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::FileDiff>, String>,
+    },
+    /// A diff snapshot for one session.
+    SessionDiffLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::FileDiff>, String>,
+    },
     /// The server accepted a model change.
     SessionModelSet { session_id: String, model: ModelRef },
     /// The server accepted an agent change.
@@ -118,6 +128,12 @@ async fn run_inner(
         ));
     }
 
+    // The HTTP `directory` is canonicalized by `SessionApi`; the child's cwd
+    // must match it, or project-scoped endpoints (VCS, worktrees) answer for a
+    // different path on systems where `/var` is a symlink to `/private/var`.
+    let project_dir =
+        std::fs::canonicalize(&config.project_dir).unwrap_or_else(|_| config.project_dir.clone());
+
     let binary = locate::locate_binary(config.binary.as_deref()).map_err(|err| err.to_string())?;
     tracing::debug!(binary = %binary.display(), "located the OpenCode binary");
     let version = read_version(&binary).await;
@@ -139,7 +155,7 @@ async fn run_inner(
         // v2.2 reads OPENCODE_PASSWORD; older builds read
         // OPENCODE_SERVER_PASSWORD. Set both so one binary works either way.
         .env("OPENCODE_PASSWORD", &password)
-        .current_dir(&config.project_dir)
+        .current_dir(&project_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -468,6 +484,30 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadVcsDiff {
+            request_id,
+            mode,
+            base,
+            context,
+            untracked,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_diff(&mode, base.as_deref(), context.as_deref(), &untracked) => {
+                event(EngineEvent::VcsDiffLoaded { request_id, result })
+            }
+        },
+        EngineCommand::LoadSessionDiff {
+            request_id,
+            session_id,
+            from,
+            to,
+            context,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.session_diff(&session_id, from.as_deref(), to.as_deref(), context.as_deref()) => {
+                event(EngineEvent::SessionDiffLoaded { request_id, result })
+            }
+        },
         EngineCommand::ListCatalog { request_id, kind } => {
             let load = async {
                 match kind {

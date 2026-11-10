@@ -9,6 +9,10 @@
 //! Newer builds also expose `/global/health`; [`Health`] models that payload so
 //! the client can detect and use it when present.
 
+mod diff;
+
+pub use diff::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Standard envelope used by the `/api` collection endpoints.

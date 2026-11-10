@@ -347,6 +347,9 @@ impl WorkspaceView {
                     }
                 }
             },
+            // M10-03 renders diffs; M10-02 only guarantees the data path and
+            // the parser, which is unit-tested in harness-core.
+            EngineEvent::VcsDiffLoaded { .. } | EngineEvent::SessionDiffLoaded { .. } => {}
             EngineEvent::PermissionsLoaded {
                 session_id,
                 requests,
