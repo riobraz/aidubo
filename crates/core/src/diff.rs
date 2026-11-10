@@ -65,6 +65,8 @@ pub struct FilePatch {
     pub status: Option<VcsChange>,
     pub hunks: Vec<Hunk>,
     pub binary: bool,
+    pub additions: u64,
+    pub deletions: u64,
 }
 
 impl FilePatch {
@@ -106,7 +108,13 @@ pub enum DiffLineKind {
 
 /// Parse one `FileDiff` into a render model.
 pub fn parse_patch(diff: &FileDiff) -> ParsedDiff {
-    parse_text(&diff.patch, diff.more)
+    let mut parsed = parse_text(&diff.patch, diff.more);
+    // The server's counts are authoritative for a single-file patch.
+    if parsed.files.len() == 1 {
+        parsed.files[0].additions = diff.additions;
+        parsed.files[0].deletions = diff.deletions;
+    }
+    parsed
 }
 
 /// Parse raw unified-diff text.
@@ -271,6 +279,20 @@ pub fn parse_text(patch: &str, truncated_by_server: bool) -> ParsedDiff {
         entry.hunks.push(previous);
     }
     finish_file(&mut file, &mut parsed);
+    for file in &mut parsed.files {
+        file.additions = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.kind == DiffLineKind::Added)
+            .count() as u64;
+        file.deletions = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.kind == DiffLineKind::Removed)
+            .count() as u64;
+    }
     parsed
 }
 
@@ -461,6 +483,42 @@ mod tests {
     }
 
     #[test]
+    fn diff_rows_flatten_and_collapse() {
+        let patch = "diff --git a/a b/a\n@@ -1 +1 @@\n-x\n+y\n";
+        let parsed = parse_patch(&diff(patch));
+        let rows = flatten(&parsed, &[]);
+        assert!(matches!(rows[0], DiffRow::FileHeader { .. }));
+        assert!(matches!(rows[1], DiffRow::HunkHeader { .. }));
+        assert_eq!(rows.len(), 4);
+
+        let rows = flatten(&parsed, &[true]);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0], DiffRow::FileHeader { .. }));
+    }
+
+    #[test]
+    fn diff_rows_show_notices_for_binary_and_empty() {
+        let mut value = diff(
+            "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n",
+        );
+        let parsed = parse_patch(&value);
+        assert!(matches!(flatten(&parsed, &[])[1], DiffRow::Notice { .. }));
+
+        value.patch = "diff --git a/a b/a\nrename from a\nrename to b\n".into();
+        let parsed = parse_patch(&value);
+        assert!(matches!(flatten(&parsed, &[])[1], DiffRow::Notice { .. }));
+    }
+
+    #[test]
+    fn visible_range_adds_overscan_and_clamps() {
+        assert_eq!(visible_range(0, 0, 10, 2), 0..0);
+        assert_eq!(visible_range(100, 0, 10, 2), 0..12);
+        assert_eq!(visible_range(100, 50, 10, 2), 48..62);
+        assert_eq!(visible_range(100, 98, 10, 2), 96..100);
+        assert_eq!(visible_range(100, 50, 0, 2), 0..0);
+    }
+
+    #[test]
     fn patch_handles_added_and_deleted_files() {
         let added = "diff --git a/new.rs b/new.rs\nnew file mode 100644\n--- /dev/null\n+++ b/new.rs\n@@ -0,0 +1 @@\n+hi\n";
         let parsed = parse_patch(&diff(added));
@@ -472,4 +530,97 @@ mod tests {
         assert_eq!(parsed.files[0].status, Some(VcsChange::Deleted));
         assert_eq!(parsed.files[0].new_path, None);
     }
+}
+
+/// One row of the flattened diff list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffRow {
+    FileHeader {
+        file: usize,
+        path: String,
+        additions: u64,
+        deletions: u64,
+        status: Option<VcsChange>,
+    },
+    HunkHeader {
+        file: usize,
+        hunk: usize,
+        header: String,
+    },
+    Line {
+        file: usize,
+        hunk: usize,
+        line: usize,
+    },
+    Notice {
+        file: usize,
+        text: String,
+    },
+}
+
+/// Flatten a parsed diff into rows for a virtualized list.
+///
+/// `collapsed[i]` hides file `i`'s hunks. The view builds this index once per
+/// selection, never per frame.
+pub fn flatten(parsed: &ParsedDiff, collapsed: &[bool]) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    for (index, file) in parsed.files.iter().enumerate() {
+        rows.push(DiffRow::FileHeader {
+            file: index,
+            path: file.path().to_string(),
+            additions: file.additions,
+            deletions: file.deletions,
+            status: file.status.clone(),
+        });
+        if collapsed.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if file.binary {
+            rows.push(DiffRow::Notice {
+                file: index,
+                text: "Binary file".to_string(),
+            });
+            continue;
+        }
+        if file.hunks.is_empty() {
+            rows.push(DiffRow::Notice {
+                file: index,
+                text: "No textual changes".to_string(),
+            });
+            continue;
+        }
+        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+            rows.push(DiffRow::HunkHeader {
+                file: index,
+                hunk: hunk_index,
+                header: hunk.header.clone(),
+            });
+            for line_index in 0..hunk.lines.len() {
+                rows.push(DiffRow::Line {
+                    file: index,
+                    hunk: hunk_index,
+                    line: line_index,
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// The row window to render for a viewport, with overscan.
+pub fn visible_range(
+    total: usize,
+    top: usize,
+    height: usize,
+    overscan: usize,
+) -> std::ops::Range<usize> {
+    if total == 0 || height == 0 {
+        return 0..0;
+    }
+    let start = top.saturating_sub(overscan).min(total);
+    let end = top
+        .saturating_add(height)
+        .saturating_add(overscan)
+        .min(total);
+    start..end
 }
