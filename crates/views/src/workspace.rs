@@ -13,8 +13,8 @@ use gpui_kit::*;
 use harness_core::{
     Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore, InboxStore,
     ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft,
-    SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms,
-    parse_patch, path_to_file_uri, relative_time, visible_range,
+    RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten,
+    now_ms, parse_patch, path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -108,6 +108,7 @@ pub struct WorkspaceView {
     permissions: PermissionQueue,
     inbox: InboxStore,
     forms: FormStore,
+    revert: RevertStore,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -208,6 +209,7 @@ impl WorkspaceView {
             permissions: PermissionQueue::default(),
             inbox: InboxStore::default(),
             forms: FormStore::default(),
+            revert: RevertStore::default(),
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -268,9 +270,15 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
-            EngineEvent::RevertStaged { .. }
-            | EngineEvent::RevertCommitted { .. }
-            | EngineEvent::RevertCleared { .. } => {}
+            EngineEvent::RevertStaged { session_id, revert } => {
+                self.revert.stage(&session_id, revert);
+            }
+            EngineEvent::RevertCommitted { session_id, .. } => {
+                self.revert.acknowledge();
+                self.transcript.begin(&session_id);
+                self.engine.load_transcript(session_id);
+            }
+            EngineEvent::RevertCleared { .. } => self.revert.clear(),
             EngineEvent::FormCreated { form } => {
                 let mut forms = self.forms.forms().to_vec();
                 forms.push(form);
@@ -627,6 +635,19 @@ impl WorkspaceView {
     }
 
     /// Close transient overlays (title editor, delete confirmation, errors).
+    fn revert_from(&mut self, message_id: String) {
+        let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
+            self.error = Some("Select a session first.".into());
+            return;
+        };
+        if !self
+            .engine
+            .stage_revert(&session_id, message_id, Some(false))
+        {
+            self.error = Some("The engine is not running.".into());
+        }
+    }
+
     fn fork_from(&mut self, message_id: String) {
         let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
             self.error = Some("Select a session first.".into());
@@ -1867,6 +1888,56 @@ impl WorkspaceView {
             pane = pane.child(self.permission_sheet(request, theme, cx));
         }
 
+        if let Some(staged) = self.revert.staged() {
+            let files = staged.files.len();
+            let message_id = staged.message_id.clone();
+            let session_id = staged.session_id.clone();
+            let mut panel = div()
+                .id("revert-panel")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .bg(theme.surface)
+                .border_t_1()
+                .border_color(theme.warning)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child(format!("Revert to {message_id} · {files} file(s)")),
+                );
+            panel = panel.child(
+                div()
+                    .id("revert-commit")
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .bg(theme.warning)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.engine.commit_revert(session_id.clone());
+                        cx.notify();
+                    }))
+                    .child("Revert"),
+            );
+            let session_id = staged.session_id.clone();
+            panel = panel.child(
+                div()
+                    .id("revert-cancel")
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.engine.clear_revert(session_id.clone());
+                        this.revert.clear();
+                        cx.notify();
+                    }))
+                    .child("Cancel"),
+            );
+            pane = pane.child(panel);
+        }
         if let Some(form) = self.forms.front() {
             pane = pane.child(self.render_form(theme, form, cx));
         }
@@ -2083,6 +2154,20 @@ impl WorkspaceView {
                             }))
                             .child("Fork from here"),
                     )
+                    .child({
+                        let message_id = entry.id().to_string();
+                        div()
+                            .id(SharedString::from(format!("revert-{message_id}")))
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(theme.warning))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.revert_from(message_id.clone());
+                                cx.notify();
+                            }))
+                            .child("Revert to here")
+                    })
             }
             Entry::Assistant(assistant) => {
                 let mut label = String::from("Assistant");
@@ -2712,6 +2797,35 @@ mod tests {
             status: "modified".into(),
             more: false,
         }
+    }
+
+    #[gpui_kit::test]
+    fn revert_stage_and_cancel_update_the_store(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(KitTheme::default()));
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-revert-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+
+        view.update(cx, |view, _| {
+            view.apply(harness_engine::EngineEvent::RevertStaged {
+                session_id: "ses_1".into(),
+                revert: harness_protocol::SessionRevert {
+                    message_id: "msg_2".into(),
+                    part_id: None,
+                    snapshot: None,
+                    files: Vec::new(),
+                },
+            });
+            assert!(view.revert.is_staged());
+            view.apply(harness_engine::EngineEvent::RevertCleared {
+                session_id: "ses_1".into(),
+            });
+            assert!(!view.revert.is_staged());
+        });
     }
 
     #[gpui_kit::test]

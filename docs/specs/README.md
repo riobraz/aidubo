@@ -197,7 +197,7 @@ Update this table when a node closes.
 | M14-02 vt-model | 0 | done |
 | M9-01 inbox | 1 | done |
 | M9-02 fork | 1 | done |
-| M9-03 revert | 1 | ready |
+| M9-03 revert | 1 | done |
 | M9-04 compaction-context | 1 | ready |
 | M9-05 forms | 1 | done |
 | M9-06 usage | 1 | ready |

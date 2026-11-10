@@ -77,11 +77,16 @@ Last updated: 2026-11-10
   and verifies the transcript keeps only the first turn. The revert panel and
   the message action remain.
 
+- 2026-11-10 — **M9-03 done.** "Revert to here" on user messages stages a
+  revert; the panel above the composer shows the boundary and file count with
+  Revert/Cancel. Committed reverts reload the transcript; a GPUI test covers
+  stage → cancel.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M9-03: "Revert to here" action + staged panel; then M9-04, M9-06,
-  integrations, automation, PTY, distribution and projects.
+- Next: M9-04 (compaction/context), M9-06 (usage), integrations, automation,
+  PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
