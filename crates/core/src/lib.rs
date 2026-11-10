@@ -5,6 +5,7 @@
 //! here, so callers keep using `harness_core::SessionStore` and friends.
 
 mod composer;
+mod context;
 mod diff;
 mod form;
 mod inbox;
@@ -17,6 +18,7 @@ mod util;
 mod vcs;
 
 pub use composer::*;
+pub use context::*;
 pub use diff::*;
 pub use form::*;
 pub use inbox::*;
