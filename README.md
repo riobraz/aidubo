@@ -41,7 +41,21 @@ The window uses a custom title bar above the workspace: dragging and
 double-click are handled by the bar, the system keeps the macOS traffic lights,
 and the bar shows the project directory and engine status.
 
+**M8 — rich composer.** Typing `@` opens a file picker backed by the project
+search (`@` also lists agents when the server has them), `/` at the start of a
+message lists slash commands, `$` lists skills, and `#` lists built-in
+snippets. Selecting a file inserts an `@path` mention and attaches it to the
+prompt with server-compatible offsets; commands replace the prompt with a
+`POST /command` call. Attached files, agents, skills, and the selected command
+appear as removable chips above the input. The model and agent badges below
+the input open searchable pickers and persist the choice for the session. A
+picker that fails or finds nothing leaves the typed text untouched.
+
 Not implemented yet: collapsible tool output, Linux packaging, and auto-update.
+The post-M7 sequence — rich composer, conversation control, git review,
+projects/worktrees/multi-run, automation, integrations, terminal, preview — is
+in [`docs/ROADMAP.md`](docs/ROADMAP.md), with executable per-feature specs, a
+dependency graph, and unit/e2e gates in [`docs/specs/`](docs/specs/README.md).
 
 Sessions are scoped with the canonical project directory (on macOS, `/tmp` is
 stored as `/private/tmp`); a new session is pinned to that directory through the
@@ -98,12 +112,15 @@ On macOS use Cmd; on Linux use Ctrl.
 
 | Shortcut | Action |
 | --- | --- |
-| `Enter` | Send the composer text |
+| `Enter` | Send the composer text, or choose the highlighted picker item |
 | `Shift+Enter` | Insert a newline in the composer |
+| `@` / `/` / `$` / `#` | Open the file (or agent), command, skill, or snippet picker |
+| `Up` / `Down` | Move the picker highlight |
+| `Tab` | Choose the highlighted picker item |
 | `Cmd/Ctrl+N` | New session |
 | `Cmd/Ctrl+L` | Focus the composer |
 | `Cmd/Ctrl+Shift+L` | Toggle light/dark theme |
-| `Esc` | Dismiss the error or the open rename/delete prompt |
+| `Esc` | Close the picker, or dismiss the error or the open rename/delete prompt |
 
 ## Tests
 
@@ -115,7 +132,9 @@ Protocol parsing and the pure state reducers have unit tests. The sidecar
 integration tests in `crates/engine/tests/sidecar.rs` launch a real
 `opencode serve`: the session test needs `opencode` on `PATH` (skip it with
 `RUST_HARNESS_SKIP_E2E=1`), and the streaming test runs only when
-`RUST_HARNESS_MOCK_PROVIDER` points at an OpenAI-compatible mock endpoint.
+`RUST_HARNESS_MOCK_PROVIDER` points at an OpenAI-compatible mock endpoint. The
+attachment test uses the same mock and also checks that file/agent attachments
+and a model/agent switch reach the server.
 
 ## Configuration
 

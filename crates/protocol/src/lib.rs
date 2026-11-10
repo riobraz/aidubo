@@ -45,13 +45,121 @@ pub struct SessionTime {
 }
 
 /// The model a session was last configured to use.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModelRef {
     pub id: String,
-    #[serde(default, rename = "providerID")]
+    #[serde(
+        default,
+        rename = "providerID",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub provider_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+}
+
+/// One entry returned by `GET /api/fs/find`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct FileEntry {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+}
+
+/// One entry returned by `GET /api/command`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct CommandInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// One entry returned by `GET /api/skill`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SkillInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// One entry returned by `GET /api/agent`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct AgentInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+/// One entry returned by `GET /api/model`.
+///
+/// The server returns a large catalog with provider metadata we do not render;
+/// only the identifying fields are modeled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ModelInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, rename = "modelID")]
+    pub model_id: String,
+    #[serde(default, rename = "providerID")]
+    pub provider_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl ModelInfo {
+    /// The model identifier the prompt API expects.
+    pub fn wire_id(&self) -> &str {
+        if self.model_id.is_empty() {
+            &self.id
+        } else {
+            &self.model_id
+        }
+    }
+
+    /// The reference used by `POST /api/session/{id}/model`.
+    pub fn model_ref(&self) -> ModelRef {
+        ModelRef {
+            id: self.wire_id().to_string(),
+            provider_id: (!self.provider_id.is_empty()).then(|| self.provider_id.clone()),
+            variant: None,
+        }
+    }
+}
+
+/// A catalog the client can list from the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CatalogKind {
+    Commands,
+    Skills,
+    Agents,
+    Models,
+}
+
+impl CatalogKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Commands => "commands",
+            Self::Skills => "skills",
+            Self::Agents => "agents",
+            Self::Models => "models",
+        }
+    }
 }
 
 /// The project directory a session belongs to.
@@ -311,10 +419,92 @@ pub struct MessageCursor {
     pub next: Option<String>,
 }
 
+/// A range of the prompt text that names an attachment.
+///
+/// OpenCode's TypeScript clients use JavaScript string indices, so `start` and
+/// `end` are UTF-16 code units (the range includes the sigil, `text` excludes
+/// it). The end is exclusive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MentionRange {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+/// Where a prompt file's content should come from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum FileSource {
+    Uri { uri: String },
+    Inline,
+}
+
+/// One file attached to a prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptFile {
+    /// Present in requests; the server echoes files without it and keeps the
+    /// location inside `source` instead.
+    #[serde(default)]
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<FileSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mention: Option<MentionRange>,
+}
+
+/// One agent attached to a prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAttachment {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mention: Option<MentionRange>,
+}
+
+/// One skill attached to a prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillAttachment {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mention: Option<MentionRange>,
+}
+
 /// Request body for `POST /api/session/{sessionID}/prompt`.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PromptRequest {
     pub text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<PromptFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<AgentAttachment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillAttachment>,
+}
+
+/// Request body for `POST /api/session/{sessionID}/command`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CommandRequest {
+    pub name: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<PromptFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<AgentAttachment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillAttachment>,
+}
+
+/// Request body for `POST /api/session/{sessionID}/model`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetModelRequest {
+    pub model: ModelRef,
+}
+
+/// Request body for `POST /api/session/{sessionID}/agent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetAgentRequest {
+    pub agent: String,
 }
 
 /// The inbox message acknowledged by `POST /api/session/{sessionID}/prompt`.
@@ -333,6 +523,13 @@ pub struct AcceptedPrompt {
 pub struct PromptPayload {
     #[serde(default)]
     pub text: String,
+    /// Attachments the server stored with the message, echoed back in full.
+    #[serde(default)]
+    pub files: Vec<PromptFile>,
+    #[serde(default)]
+    pub agents: Vec<AgentAttachment>,
+    #[serde(default)]
+    pub skills: Vec<SkillAttachment>,
 }
 
 /// Response body of `POST /api/session/{sessionID}/interrupt`.
@@ -798,11 +995,132 @@ mod tests {
     fn prompt_request_serializes_text_only() {
         let request = PromptRequest {
             text: "hello".into(),
+            ..Default::default()
         };
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
             serde_json::json!({"text": "hello"})
         );
+    }
+
+    #[test]
+    fn prompt_request_serializes_attachments() {
+        let request = PromptRequest {
+            text: "read @README.md and $opencode".into(),
+            files: vec![PromptFile {
+                uri: "file:///tmp/README.md".into(),
+                source: Some(FileSource::Uri {
+                    uri: "file:///tmp/README.md".into(),
+                }),
+                name: Some("README.md".into()),
+                mention: Some(MentionRange {
+                    start: 5,
+                    end: 15,
+                    text: "README.md".into(),
+                }),
+            }],
+            agents: vec![AgentAttachment {
+                name: "build".into(),
+                mention: None,
+            }],
+            skills: vec![SkillAttachment {
+                id: "opencode".into(),
+                mention: None,
+            }],
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["text"], "read @README.md and $opencode");
+        assert_eq!(value["files"][0]["uri"], "file:///tmp/README.md");
+        assert_eq!(value["files"][0]["mention"]["start"], 5);
+        assert_eq!(value["files"][0]["mention"]["end"], 15);
+        assert_eq!(value["files"][0]["source"]["type"], "uri");
+        assert_eq!(value["agents"][0], serde_json::json!({"name": "build"}));
+        assert_eq!(value["skills"][0], serde_json::json!({"id": "opencode"}));
+    }
+
+    #[test]
+    fn command_and_session_requests_serialize() {
+        let command = CommandRequest {
+            name: "review".into(),
+            text: "HEAD~1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&command).unwrap(),
+            serde_json::json!({"name": "review", "text": "HEAD~1"})
+        );
+
+        let model = SetModelRequest {
+            model: ModelRef {
+                id: "gpt-5".into(),
+                provider_id: Some("openai".into()),
+                variant: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&model).unwrap(),
+            serde_json::json!({"model": {"id": "gpt-5", "providerID": "openai"}})
+        );
+
+        let agent = SetAgentRequest {
+            agent: "plan".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&agent).unwrap(),
+            serde_json::json!({"agent": "plan"})
+        );
+    }
+
+    #[test]
+    fn parses_catalog_entries_with_missing_optional_fields() {
+        let files: Envelope<Vec<FileEntry>> = serde_json::from_str(
+            r#"{"location":{"directory":"/tmp"},"data":[
+                {"path":"src/main.rs","type":"file"},
+                {"path":"src"},
+                {"path":"x","type":"nonsense","future":true}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(files.data[0].path, "src/main.rs");
+        assert_eq!(files.data[0].kind, "file");
+        assert_eq!(files.data[1].kind, "");
+        assert_eq!(files.data[2].kind, "nonsense");
+
+        let commands: Envelope<Vec<CommandInfo>> =
+            serde_json::from_str(r#"{"data":[{"name":"init"},{"name":"review","extra":1}]}"#)
+                .unwrap();
+        assert_eq!(commands.data[0].description, "");
+        assert_eq!(commands.data[1].name, "review");
+
+        let skills: Envelope<Vec<SkillInfo>> =
+            serde_json::from_str(r#"{"data":[{"id":"opencode","name":"OpenCode"}]}"#).unwrap();
+        assert_eq!(skills.data[0].id, "opencode");
+        assert_eq!(skills.data[0].description, "");
+
+        let agents: Envelope<Vec<AgentInfo>> =
+            serde_json::from_str(r#"{"data":[{"id":"build","name":"Build","mode":"primary"}]}"#)
+                .unwrap();
+        assert_eq!(agents.data[0].mode.as_deref(), Some("primary"));
+        assert!(!agents.data[0].hidden);
+
+        let models: Envelope<Vec<ModelInfo>> = serde_json::from_str(
+            r#"{"data":[
+                {"id":"liquid/lfm","modelID":"liquid/lfm","providerID":"openrouter","name":"LFM","enabled":true},
+                {"id":"alias","name":"Alias"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(models.data[0].wire_id(), "liquid/lfm");
+        assert_eq!(
+            models.data[0].model_ref(),
+            ModelRef {
+                id: "liquid/lfm".into(),
+                provider_id: Some("openrouter".into()),
+                variant: None,
+            }
+        );
+        assert_eq!(models.data[1].wire_id(), "alias");
+        assert_eq!(models.data[1].model_ref().provider_id, None);
     }
 
     #[test]

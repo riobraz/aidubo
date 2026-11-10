@@ -3,11 +3,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use harness_protocol::{
-    AcceptedPrompt, CreateSessionRequest, Envelope, InterruptResponse, MessagePage,
-    PermissionReply, PermissionReplyRequest, PermissionRequest, PromptRequest, Session,
-    SessionList, SessionLocation, SessionMessage, UpdateSessionRequest,
-};
 use reqwest::{Client, Method, Response};
 
 /// Authenticated client for one sidecar instance.
@@ -18,10 +13,10 @@ use reqwest::{Client, Method, Response};
 /// Cloning is cheap: the underlying HTTP client and strings are shared.
 #[derive(Clone)]
 pub(crate) struct SessionApi {
-    client: Client,
-    base_url: String,
-    password: String,
-    directory: String,
+    pub(crate) client: Client,
+    pub(crate) base_url: String,
+    pub(crate) password: String,
+    pub(crate) directory: String,
 }
 
 impl SessionApi {
@@ -43,146 +38,11 @@ impl SessionApi {
         })
     }
 
-    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+    pub(crate) fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .request(method, format!("{}{path}", self.base_url))
             .timeout(Duration::from_secs(15))
             .basic_auth("opencode", Some(&self.password))
-    }
-
-    /// Root sessions in this project, newest first.
-    pub async fn list(&self) -> Result<Vec<Session>, String> {
-        let response = self
-            .request(Method::GET, "/api/session")
-            .query(&[
-                ("directory", self.directory.as_str()),
-                ("parentID", "null"),
-                ("limit", "100"),
-                ("order", "desc"),
-            ])
-            .send()
-            .await
-            .map_err(network_error)?;
-        let response = ensure_success(response).await?;
-        let list: SessionList = response.json().await.map_err(decode_error)?;
-        Ok(list.data)
-    }
-
-    /// Create a root session pinned to this project.
-    pub async fn create(&self) -> Result<Session, String> {
-        let request = CreateSessionRequest {
-            title: None,
-            location: Some(SessionLocation {
-                directory: self.directory.clone(),
-            }),
-        };
-        let response = self
-            .request(Method::POST, "/api/session")
-            .json(&request)
-            .send()
-            .await
-            .map_err(network_error)?;
-        let response = ensure_success(response).await?;
-        let envelope: Envelope<Session> = response.json().await.map_err(decode_error)?;
-        Ok(envelope.data)
-    }
-
-    pub async fn rename(&self, id: &str, title: String) -> Result<(), String> {
-        let request = UpdateSessionRequest { title: Some(title) };
-        let response = self
-            .request(Method::PATCH, &format!("/api/session/{id}"))
-            .json(&request)
-            .send()
-            .await
-            .map_err(network_error)?;
-        ensure_success(response).await?;
-        Ok(())
-    }
-
-    pub async fn delete(&self, id: &str) -> Result<(), String> {
-        let response = self
-            .request(Method::DELETE, &format!("/api/session/{id}"))
-            .send()
-            .await
-            .map_err(network_error)?;
-        ensure_success(response).await?;
-        Ok(())
-    }
-
-    /// The session timeline, oldest first.
-    pub async fn messages(&self, id: &str) -> Result<Vec<SessionMessage>, String> {
-        let response = self
-            .request(Method::GET, &format!("/api/session/{id}/message"))
-            .query(&[("order", "asc")])
-            .send()
-            .await
-            .map_err(network_error)?;
-        let response = ensure_success(response).await?;
-        let page: MessagePage = response.json().await.map_err(decode_error)?;
-        Ok(page.data)
-    }
-
-    /// Queue a prompt for the session. The turn itself runs asynchronously and
-    /// is observed through the event stream.
-    pub async fn prompt(&self, id: &str, text: String) -> Result<AcceptedPrompt, String> {
-        let response = self
-            .request(Method::POST, &format!("/api/session/{id}/prompt"))
-            .json(&PromptRequest { text })
-            .send()
-            .await
-            .map_err(network_error)?;
-        let response = ensure_success(response).await?;
-        let accepted: Envelope<AcceptedPrompt> = response.json().await.map_err(decode_error)?;
-        Ok(accepted.data)
-    }
-
-    /// Interrupt the running turn. Returns whether anything was interrupted.
-    pub async fn interrupt(&self, id: &str) -> Result<bool, String> {
-        let response = self
-            .request(Method::POST, &format!("/api/session/{id}/interrupt"))
-            .send()
-            .await
-            .map_err(network_error)?;
-        let response = ensure_success(response).await?;
-        let answer: InterruptResponse = response.json().await.map_err(decode_error)?;
-        Ok(answer.interrupted)
-    }
-
-    /// Pending permission requests for a session, oldest first.
-    pub async fn permissions(&self, id: &str) -> Result<Vec<PermissionRequest>, String> {
-        let response = self
-            .request(Method::GET, &format!("/api/session/{id}/permission"))
-            .send()
-            .await
-            .map_err(network_error)?;
-        let response = ensure_success(response).await?;
-        let list: Envelope<Vec<PermissionRequest>> = response.json().await.map_err(decode_error)?;
-        Ok(list.data)
-    }
-
-    /// Answer a permission request, unblocking the waiting turn. Replies are
-    /// `204 No Content`.
-    pub async fn reply_permission(
-        &self,
-        session_id: &str,
-        request_id: &str,
-        reply: PermissionReply,
-    ) -> Result<(), String> {
-        let request = PermissionReplyRequest {
-            decision: reply,
-            message: None,
-        };
-        let response = self
-            .request(
-                Method::POST,
-                &format!("/api/session/{session_id}/permission/{request_id}/reply"),
-            )
-            .json(&request)
-            .send()
-            .await
-            .map_err(network_error)?;
-        ensure_success(response).await?;
-        Ok(())
     }
 
     /// Open the server-sent event stream. The response is `text/event-stream`
@@ -200,7 +60,7 @@ impl SessionApi {
     }
 }
 
-async fn ensure_success(response: Response) -> Result<Response, String> {
+pub(crate) async fn ensure_success(response: Response) -> Result<Response, String> {
     if response.status().is_success() {
         return Ok(response);
     }
@@ -215,10 +75,10 @@ async fn ensure_success(response: Response) -> Result<Response, String> {
     Err(format!("OpenCode returned {status}: {body}"))
 }
 
-fn network_error(error: reqwest::Error) -> String {
+pub(crate) fn network_error(error: reqwest::Error) -> String {
     format!("request to OpenCode failed: {error}")
 }
 
-fn decode_error(error: reqwest::Error) -> String {
+pub(crate) fn decode_error(error: reqwest::Error) -> String {
     format!("OpenCode returned an unreadable response: {error}")
 }

@@ -5,12 +5,19 @@
 
 use std::time::{Duration, Instant};
 
-use async_channel::{Receiver, TryRecvError};
+mod support;
+
+use support::wait_for;
+
+use async_channel::TryRecvError;
 use harness_engine::{
-    Engine, EngineConfig, EngineEvent, ExecutionOutcome, PermissionReply, StreamEvent,
-    locate_binary,
+    CatalogData, CatalogKind, Engine, EngineConfig, EngineEvent, ExecutionOutcome, PermissionReply,
+    StreamEvent, locate_binary,
 };
-use harness_protocol::{AssistantPart, SessionMessage};
+use harness_protocol::{
+    AgentAttachment, AssistantPart, FileSource, MentionRange, PromptFile, PromptRequest,
+    SessionMessage,
+};
 
 #[test]
 fn boots_reaches_ready_and_round_trips_sessions() {
@@ -23,17 +30,9 @@ fn boots_reaches_ready_and_round_trips_sessions() {
         return;
     }
 
-    let project = std::env::temp_dir().join(format!(
-        "rust-harness-e2e-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&project).unwrap();
+    let project = support::project("e2e");
 
-    let mut engine = Engine::spawn(EngineConfig::new(&project));
+    let mut engine = Engine::spawn(EngineConfig::new(project.path()));
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(30);
 
@@ -175,15 +174,7 @@ fn streams_assistant_text_from_a_mock_provider() {
         return;
     }
 
-    let project = std::env::temp_dir().join(format!(
-        "rust-harness-stream-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&project).unwrap();
+    let project = support::project("stream");
     std::fs::write(
         project.join("opencode.json"),
         format!(
@@ -203,7 +194,7 @@ fn streams_assistant_text_from_a_mock_provider() {
     )
     .unwrap();
 
-    let mut engine = Engine::spawn(EngineConfig::new(&project));
+    let mut engine = Engine::spawn(EngineConfig::new(project.path()));
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(60);
 
@@ -211,7 +202,7 @@ fn streams_assistant_text_from_a_mock_provider() {
         matches!(event, EngineEvent::Ready { .. })
     });
     // Prompting before the SSE stream is open would race the deltas.
-    wait_for_startup(&events, deadline);
+    support::wait_for_stream(&events, deadline);
 
     assert!(engine.create_session(), "engine stopped before create");
     let created = wait_for(&events, deadline, |event| {
@@ -223,7 +214,13 @@ fn streams_assistant_text_from_a_mock_provider() {
     let id = session.id.clone();
 
     assert!(
-        engine.send_prompt(&id, "hi"),
+        engine.send_prompt(
+            &id,
+            PromptRequest {
+                text: "hi".into(),
+                ..Default::default()
+            }
+        ),
         "engine stopped before prompt"
     );
     let accepted = wait_for(&events, deadline, |event| {
@@ -302,15 +299,7 @@ fn streams_reasoning_and_tool_calls_from_a_mock_provider() {
         return;
     }
 
-    let project = std::env::temp_dir().join(format!(
-        "rust-harness-tools-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&project).unwrap();
+    let project = support::project("tools");
     let target = project.join("hello.txt");
     std::fs::write(&target, "hello from the mock project").unwrap();
     std::fs::write(
@@ -332,14 +321,14 @@ fn streams_reasoning_and_tool_calls_from_a_mock_provider() {
     )
     .unwrap();
 
-    let mut engine = Engine::spawn(EngineConfig::new(&project));
+    let mut engine = Engine::spawn(EngineConfig::new(project.path()));
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(90);
 
     wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::Ready { .. })
     });
-    wait_for_startup(&events, deadline);
+    support::wait_for_stream(&events, deadline);
 
     assert!(engine.create_session(), "engine stopped before create");
     let created = wait_for(&events, deadline, |event| {
@@ -351,7 +340,13 @@ fn streams_reasoning_and_tool_calls_from_a_mock_provider() {
     let id = session.id.clone();
 
     assert!(
-        engine.send_prompt(&id, format!("read {}", target.display())),
+        engine.send_prompt(
+            &id,
+            PromptRequest {
+                text: format!("read {}", target.display()),
+                ..Default::default()
+            }
+        ),
         "engine stopped before prompt"
     );
 
@@ -486,25 +481,17 @@ fn asks_for_permission_and_unblocks_after_reply() {
         return;
     }
 
-    let project = std::env::temp_dir().join(format!(
-        "rust-harness-permission-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&project).unwrap();
+    let project = support::project("permission");
     std::fs::write(project.join("opencode.json"), permission_config(&base_url)).unwrap();
 
-    let mut engine = Engine::spawn(EngineConfig::new(&project));
+    let mut engine = Engine::spawn(EngineConfig::new(project.path()));
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(90);
 
     wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::Ready { .. })
     });
-    wait_for_startup(&events, deadline);
+    support::wait_for_stream(&events, deadline);
 
     assert!(engine.create_session(), "engine stopped before create");
     let created = wait_for(&events, deadline, |event| {
@@ -516,7 +503,13 @@ fn asks_for_permission_and_unblocks_after_reply() {
     let id = session.id.clone();
 
     assert!(
-        engine.send_prompt(&id, "please run the command"),
+        engine.send_prompt(
+            &id,
+            PromptRequest {
+                text: "please run the command".into(),
+                ..Default::default()
+            }
+        ),
         "engine stopped before prompt"
     );
 
@@ -624,25 +617,17 @@ fn declining_permission_fails_the_tool_and_interrupts_the_turn() {
         return;
     }
 
-    let project = std::env::temp_dir().join(format!(
-        "rust-harness-reject-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&project).unwrap();
+    let project = support::project("reject");
     std::fs::write(project.join("opencode.json"), permission_config(&base_url)).unwrap();
 
-    let mut engine = Engine::spawn(EngineConfig::new(&project));
+    let mut engine = Engine::spawn(EngineConfig::new(project.path()));
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(90);
 
     wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::Ready { .. })
     });
-    wait_for_startup(&events, deadline);
+    support::wait_for_stream(&events, deadline);
 
     assert!(engine.create_session(), "engine stopped before create");
     let created = wait_for(&events, deadline, |event| {
@@ -654,7 +639,13 @@ fn declining_permission_fails_the_tool_and_interrupts_the_turn() {
     let id = session.id.clone();
 
     assert!(
-        engine.send_prompt(&id, "please run the command"),
+        engine.send_prompt(
+            &id,
+            PromptRequest {
+                text: "please run the command".into(),
+                ..Default::default()
+            }
+        ),
         "engine stopped before prompt"
     );
 
@@ -703,6 +694,206 @@ fn declining_permission_fails_the_tool_and_interrupts_the_turn() {
     let _ = std::fs::remove_dir_all(&project);
 }
 
+/// Attachments and session selections must survive on the server, not just in
+/// the client's optimistic state.
+#[test]
+fn attachments_and_session_selection_reach_the_server() {
+    let Some(base_url) = std::env::var("RUST_HARNESS_MOCK_PROVIDER").ok() else {
+        eprintln!("skipping attachment e2e test: RUST_HARNESS_MOCK_PROVIDER is not set");
+        return;
+    };
+    if locate_binary(None).is_err() {
+        eprintln!("skipping attachment e2e test: opencode was not found");
+        return;
+    }
+
+    let project = support::project("attachments");
+    std::fs::write(
+        project.join("opencode.json"),
+        format!(
+            r#"{{
+                "$schema": "https://opencode.ai/config.json",
+                "model": "mock/mock-model",
+                "provider": {{
+                    "mock": {{
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": "Mock",
+                        "options": {{ "baseURL": "{base_url}", "apiKey": "test-key" }},
+                        "models": {{ "mock-model": {{ "name": "Mock Model" }} }}
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(project.join("notes.txt"), "attachment fixture").unwrap();
+
+    let mut engine = Engine::spawn(EngineConfig::new(project.path()));
+    let events = engine.events();
+    let deadline = Instant::now() + Duration::from_secs(60);
+
+    let ready = wait_for(&events, deadline, |event| {
+        matches!(event, EngineEvent::Ready { .. })
+    });
+    let EngineEvent::Ready { port, .. } = ready else {
+        unreachable!("predicate only accepts Ready");
+    };
+    support::wait_for_stream(&events, deadline);
+
+    assert!(engine.create_session(), "engine stopped before create");
+    let created = wait_for(&events, deadline, |event| {
+        matches!(event, EngineEvent::SessionCreated { .. })
+    });
+    let EngineEvent::SessionCreated { session } = created else {
+        unreachable!("predicate only accepts SessionCreated");
+    };
+    let id = session.id.clone();
+
+    assert!(engine.set_session_agent(&id, "plan"));
+    wait_for(&events, deadline, |event| {
+        matches!(event, EngineEvent::SessionAgentSet { .. })
+    });
+
+    assert!(engine.list_catalog(41, CatalogKind::Models));
+    let loaded = wait_for(&events, deadline, |event| {
+        matches!(
+            event,
+            EngineEvent::CatalogLoaded {
+                kind: CatalogKind::Models,
+                ..
+            }
+        )
+    });
+    let EngineEvent::CatalogLoaded { result, .. } = loaded else {
+        unreachable!("predicate only accepts CatalogLoaded");
+    };
+    let CatalogData::Models(models) = result.expect("model catalog") else {
+        panic!("expected a model catalog");
+    };
+    let model = models
+        .iter()
+        .find(|model| model.provider_id == "mock" && model.wire_id() == "mock-model")
+        .or_else(|| models.iter().find(|model| model.enabled))
+        .expect("the catalog contains at least one model")
+        .model_ref();
+
+    assert!(engine.set_session_model(&id, model.clone()));
+    wait_for(&events, deadline, |event| {
+        matches!(event, EngineEvent::SessionModelSet { .. })
+    });
+
+    // Read the session back from the server to prove the selections stuck.
+    assert!(engine.refresh_sessions());
+    let reloaded = wait_for(&events, deadline, |event| match event {
+        EngineEvent::SessionsLoaded { sessions } => sessions.iter().any(|s| s.id == id),
+        _ => false,
+    });
+    let EngineEvent::SessionsLoaded { sessions } = reloaded else {
+        unreachable!("predicate only accepts SessionsLoaded");
+    };
+    let session = sessions.iter().find(|session| session.id == id).unwrap();
+    assert_eq!(session.agent.as_deref(), Some("plan"));
+    assert_eq!(
+        session.model.as_ref().map(|model| model.id.as_str()),
+        Some(model.id.as_str())
+    );
+
+    let path = project.join("notes.txt");
+    let uri = format!("file://{}", path.to_string_lossy());
+    let request = PromptRequest {
+        text: "read @notes.txt".into(),
+        files: vec![PromptFile {
+            uri: uri.clone(),
+            source: Some(FileSource::Uri { uri }),
+            name: Some("notes.txt".into()),
+            mention: Some(MentionRange {
+                start: 5,
+                end: 15,
+                text: "notes.txt".into(),
+            }),
+        }],
+        agents: vec![AgentAttachment {
+            name: "plan".into(),
+            mention: None,
+        }],
+        skills: Vec::new(),
+    };
+    assert!(
+        engine.send_prompt(&id, request),
+        "engine stopped before prompt"
+    );
+    let accepted = wait_for(&events, deadline, |event| {
+        matches!(event, EngineEvent::PromptAccepted { .. })
+    });
+    let EngineEvent::PromptAccepted {
+        session_id,
+        message,
+    } = accepted
+    else {
+        unreachable!("predicate only accepts PromptAccepted");
+    };
+    assert_eq!(session_id, id);
+    let accepted_id = message.id.clone();
+
+    // The server echoes the stored attachments in the accepted message.
+    assert_eq!(message.payload.text, "read @notes.txt");
+    assert_eq!(message.payload.files.len(), 1);
+    let stored_file = &message.payload.files[0];
+    let Some(FileSource::Uri { uri }) = stored_file.source.as_ref() else {
+        panic!("the stored file keeps its uri source");
+    };
+    assert!(uri.starts_with("file://"));
+    assert_eq!(stored_file.name.as_deref(), Some("notes.txt"));
+    let mention = stored_file.mention.as_ref().expect("mention range");
+    assert_eq!(
+        (mention.start, mention.end, mention.text.as_str()),
+        (5, 15, "notes.txt")
+    );
+    assert_eq!(message.payload.agents.len(), 1);
+    assert_eq!(message.payload.agents[0].name, "plan");
+
+    // The user message is only appended to the timeline once the turn starts,
+    // so wait for the turn before reading the transcript back.
+    wait_for(&events, deadline, |event| {
+        matches!(
+            event,
+            EngineEvent::Stream(StreamEvent::ExecutionFinished { .. })
+        )
+    });
+    assert!(engine.load_transcript(&id));
+    let transcript = wait_for(&events, deadline, |event| match event {
+        EngineEvent::TranscriptLoaded {
+            session_id,
+            messages,
+        } => {
+            session_id == &id
+                && messages
+                    .iter()
+                    .any(|message| message.id() == Some(accepted_id.as_str()))
+        }
+        _ => false,
+    });
+    let EngineEvent::TranscriptLoaded { messages, .. } = transcript else {
+        unreachable!("predicate only accepts TranscriptLoaded");
+    };
+    let stored = messages
+        .iter()
+        .find_map(|message| match message {
+            SessionMessage::User { id, text, .. } if id == &accepted_id => Some(text),
+            _ => None,
+        })
+        .expect("the attached prompt is stored on the server");
+    assert_eq!(stored, "read @notes.txt");
+
+    engine.shutdown();
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "sidecar is still listening on 127.0.0.1:{port} after shutdown"
+    );
+    let _ = std::fs::remove_dir_all(&project);
+}
+
 /// A project config that gates shell tools behind an explicit answer.
 fn permission_config(base_url: &str) -> String {
     format!(
@@ -720,46 +911,4 @@ fn permission_config(base_url: &str) -> String {
             }}
         }}"#
     )
-}
-
-/// Wait until the initial session snapshot has arrived and the event stream is
-/// open. The two are emitted concurrently, so neither order can be assumed.
-fn wait_for_startup(events: &Receiver<EngineEvent>, deadline: Instant) {
-    let mut stream = false;
-    let mut sessions = false;
-    while !(stream && sessions) {
-        if Instant::now() >= deadline {
-            panic!("timed out waiting for the startup events");
-        }
-        match events.try_recv() {
-            Ok(EngineEvent::Failed { message }) => panic!("engine failed: {message}"),
-            Ok(EngineEvent::StreamConnected) => stream = true,
-            Ok(EngineEvent::SessionsLoaded { .. }) => sessions = true,
-            Ok(_) => {}
-            Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(25)),
-            Err(TryRecvError::Closed) => panic!("engine event stream closed"),
-        }
-    }
-}
-
-fn wait_for(
-    events: &Receiver<EngineEvent>,
-    deadline: Instant,
-    mut matches: impl FnMut(&EngineEvent) -> bool,
-) -> EngineEvent {
-    loop {
-        if Instant::now() >= deadline {
-            panic!("timed out waiting for an engine event");
-        }
-        match events.try_recv() {
-            Ok(EngineEvent::Failed { message }) => panic!("engine failed: {message}"),
-            Ok(event) => {
-                if matches(&event) {
-                    return event;
-                }
-            }
-            Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(25)),
-            Err(TryRecvError::Closed) => panic!("engine event stream closed"),
-        }
-    }
 }

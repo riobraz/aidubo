@@ -3244,6 +3244,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-term"
+version = "0.1.0"
+
+[[package]]
 name = "harness-ui"
 version = "0.1.0"
 dependencies = [
