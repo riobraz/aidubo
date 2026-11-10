@@ -22,10 +22,19 @@ Last updated: 2026-11-10
   `/var` → `/private/var` split otherwise made the VCS endpoints answer for a
   different path.
 
+- 2026-11-10 — **M10-01 data path.** `VcsFileStatus`/`VcsBase`,
+  `VcsStore` (4 tests), `LoadVcsStatus`/`LoadVcsBase`/`InitRepo`, API methods,
+  e2e with a real working tree and `git init`. The panel is pending.
+- 2026-11-10 — **M10-03 model.** `DiffRow` flattening with collapse,
+  binary/empty notices, per-file counts, and `visible_range` with overscan
+  (3 tests). The GPUI renderer is pending.
+
 ## In progress / next
 
-- M10-01 (VCS status panel), then M9-02, M9-01, M9-05, M9-03, M9-04, M9-06,
-  then the integration, automation, PTY, distribution and project nodes.
+- M10-01 panel: Changes list + branch chip, refresh on `filesystem.changed`.
+- M10-03 renderer: rows from `flatten`/`visible_range`, unified layout.
+- Then M9-02, M9-01, M9-05, M9-03, M9-04, M9-06, then integrations,
+  automation, PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
@@ -40,4 +49,6 @@ Per node. M10-02:
 cargo test -p harness-core           45 passed
 cargo test -p harness-protocol       16 passed
 cargo test -p harness-engine --test M10-02   1 passed
+cargo test -p harness-engine --test M10-01   2 passed
+cargo test --workspace                       121 passed
 ```
