@@ -11,12 +11,15 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    Content, DraftSend, EngineStatus, Entry, PermissionQueue, PickerEffect, PickerItem, PickerKind,
-    PickerState, PromptDraft, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore,
-    now_ms, path_to_file_uri, relative_time,
+    Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, ParsedDiff, PermissionQueue,
+    PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft, SNIPPETS, SessionStore,
+    ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten, now_ms, parse_patch,
+    path_to_file_uri, relative_time,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
-use harness_protocol::{AgentInfo, CommandInfo, ModelInfo, PermissionRequest, Session, SkillInfo};
+use harness_protocol::{
+    AgentInfo, CommandInfo, FileDiff, ModelInfo, PermissionRequest, Session, SkillInfo,
+};
 use harness_ui::{Theme, attachment_chip, status_dot};
 
 /// Server-backed lists the composer pickers filter locally.
@@ -119,6 +122,11 @@ pub struct WorkspaceView {
     /// Debounces `@` file searches; dropping it cancels the pending query.
     file_debounce: Option<Task<()>>,
     engine: Engine,
+    vcs: VcsStore,
+    diff_files: Vec<FileDiff>,
+    diff: ParsedDiff,
+    diff_rows: Vec<DiffRow>,
+    vcs_request: u64,
     _events_task: Task<()>,
 }
 
@@ -193,6 +201,11 @@ impl WorkspaceView {
             _picker_input_subscription: None,
             file_debounce: None,
             engine,
+            vcs: VcsStore::default(),
+            diff_files: Vec::new(),
+            diff: ParsedDiff::default(),
+            diff_rows: Vec::new(),
+            vcs_request: 0,
             _events_task: events_task,
         }
     }
@@ -203,6 +216,7 @@ impl WorkspaceView {
                 self.status = EngineStatus::Starting { port: Some(port) };
             }
             EngineEvent::Ready { version, port } => {
+                self.request_vcs_status();
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -347,12 +361,35 @@ impl WorkspaceView {
                     }
                 }
             },
-            // M10-01/M10-03 render these; the data paths land first.
-            EngineEvent::VcsStatusLoaded { .. }
-            | EngineEvent::VcsBaseLoaded { .. }
-            | EngineEvent::RepoInitialized { .. }
-            | EngineEvent::VcsDiffLoaded { .. }
-            | EngineEvent::SessionDiffLoaded { .. } => {}
+            EngineEvent::VcsStatusLoaded { result, .. } => match result {
+                Ok(files) => {
+                    let empty = files.is_empty();
+                    self.vcs.replace(files);
+                    self.vcs.finish_refresh();
+                    if !empty && self.diff_files.is_empty() {
+                        self.request_vcs_diff();
+                    }
+                }
+                Err(message) => self.vcs.set_error(message),
+            },
+            EngineEvent::VcsBaseLoaded { result, .. } => {
+                if let Ok(Some(base)) = result {
+                    self.vcs.set_branch(base.name.clone());
+                    self.vcs.set_base(Some(base));
+                }
+            }
+            EngineEvent::RepoInitialized { result, .. } => {
+                if result.is_ok() {
+                    self.request_vcs_status();
+                }
+            }
+            EngineEvent::VcsDiffLoaded { result, .. }
+            | EngineEvent::SessionDiffLoaded { result, .. } => {
+                if let Ok(files) = result {
+                    self.diff_files = files;
+                    self.rebuild_diff();
+                }
+            }
             EngineEvent::PermissionsLoaded {
                 session_id,
                 requests,
@@ -535,6 +572,31 @@ impl WorkspaceView {
     }
 
     /// Close transient overlays (title editor, delete confirmation, errors).
+    fn request_vcs_status(&mut self) {
+        self.vcs.begin_refresh(now_ms());
+        self.vcs_request += 1;
+        self.engine.load_vcs_status(self.vcs_request);
+        self.engine.load_vcs_base(self.vcs_request);
+    }
+
+    fn request_vcs_diff(&mut self) {
+        self.vcs_request += 1;
+        self.engine
+            .load_vcs_diff(self.vcs_request, "working", None, None, "files");
+    }
+
+    fn rebuild_diff(&mut self) {
+        let mut all = ParsedDiff::default();
+        for diff in &self.diff_files {
+            let one = parse_patch(diff);
+            all.truncated |= one.truncated;
+            all.binary |= one.binary;
+            all.files.extend(one.files);
+        }
+        self.diff_rows = flatten(&all, &[]);
+        self.diff = all;
+    }
+
     fn cancel_overlays(&mut self, cx: &mut Context<Self>) {
         let had_overlay = self.renaming.is_some()
             || self.pending_delete.is_some()
@@ -899,6 +961,133 @@ impl WorkspaceView {
             .filter(|name| !name.is_empty())
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from(self.project_dir.display().to_string()))
+    }
+
+    fn render_changes(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let branch = self.vcs.branch().unwrap_or("no branch").to_string();
+        let mut panel = div()
+            .debug_selector(|| "changes-panel".into())
+            .w(px(340.0))
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_l_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_sm().child("Changes"))
+                    .child(div().text_xs().text_color(theme.muted).child(branch)),
+            );
+
+        if let Some(error) = self.vcs.error() {
+            panel = panel.child(
+                div()
+                    .px_3()
+                    .pb_2()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(error.to_string()),
+            );
+        }
+
+        let mut list = div()
+            .id("changes-list")
+            .flex()
+            .flex_col()
+            .max_h(px(220.0))
+            .overflow_y_scroll()
+            .border_t_1()
+            .border_color(theme.border);
+        if self.vcs.files().is_empty() {
+            let label = if self.vcs.is_loading() {
+                "Loading…"
+            } else {
+                "No changes"
+            };
+            list = list.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(label),
+            );
+        } else {
+            for file in self.vcs.files() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .justify_between()
+                        .child(div().text_xs().child(file.file.clone()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(format!("+{} -{}", file.additions, file.deletions)),
+                        ),
+                );
+            }
+        }
+        panel = panel.child(list);
+
+        let mut body = div()
+            .id("changes-diff")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .pt_1();
+        for row in self.diff_rows.iter().take(600) {
+            let element = match row {
+                DiffRow::FileHeader { path, .. } => {
+                    div().px_2().pt_2().text_xs().child(path.clone())
+                }
+                DiffRow::HunkHeader { header, .. } => div()
+                    .px_2()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(header.clone()),
+                DiffRow::Notice { text, .. } => div()
+                    .px_2()
+                    .text_xs()
+                    .text_color(theme.warning)
+                    .child(text.clone()),
+                DiffRow::Line { file, hunk, line } => {
+                    let Some(entry) = self
+                        .diff
+                        .files
+                        .get(*file)
+                        .and_then(|file| file.hunks.get(*hunk))
+                        .and_then(|hunk| hunk.lines.get(*line))
+                    else {
+                        continue;
+                    };
+                    let (prefix, color) = match entry.kind {
+                        DiffLineKind::Added => ("+", theme.success),
+                        DiffLineKind::Removed => ("-", theme.danger),
+                        DiffLineKind::Context => (" ", theme.text),
+                        DiffLineKind::Meta => ("\\", theme.muted),
+                    };
+                    div()
+                        .px_2()
+                        .text_xs()
+                        .text_color(color)
+                        .child(format!("{prefix}{}", entry.text))
+                }
+            };
+            body = body.child(element);
+        }
+        panel.child(body)
     }
 
     /// Window title content: the app and project on the left, engine status on
@@ -2095,7 +2284,8 @@ impl Render for WorkspaceView {
                     .flex()
                     .flex_row()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_main(cx)),
+                    .child(self.render_main(cx))
+                    .child(self.render_changes(cx)),
             )
     }
 }
