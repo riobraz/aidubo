@@ -8,7 +8,8 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use futures_util::StreamExt as _;
 use harness_protocol::{
-    AcceptedPrompt, PermissionRequest, Session, SessionList, SessionMessage, StreamEvent,
+    AcceptedPrompt, CatalogKind, ModelRef, PermissionRequest, Session, SessionList, SessionMessage,
+    StreamEvent,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -17,7 +18,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::api::SessionApi;
 use crate::events;
-use crate::{EngineCommand, EngineConfig, locate};
+use crate::{CatalogData, EngineCommand, EngineConfig, locate};
 
 /// Lifecycle events and command results emitted by the supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,23 @@ pub enum EngineEvent {
     PromptAccepted {
         session_id: String,
         message: AcceptedPrompt,
+    },
+    /// A slash command was accepted by the server.
+    CommandAccepted { session_id: String },
+    /// The server accepted a model change.
+    SessionModelSet { session_id: String, model: ModelRef },
+    /// The server accepted an agent change.
+    SessionAgentSet { session_id: String, agent: String },
+    /// File search results for the `@` picker.
+    FilesFound {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::FileEntry>, String>,
+    },
+    /// One catalog snapshot.
+    CatalogLoaded {
+        request_id: u64,
+        kind: CatalogKind,
+        result: Result<CatalogData, String>,
     },
     /// A live update from the event stream.
     Stream(StreamEvent),
@@ -118,6 +136,9 @@ async fn run_inner(
         .arg("--port")
         .arg(port.to_string())
         .env("OPENCODE_SERVER_PASSWORD", &password)
+        // v2.2 reads OPENCODE_PASSWORD; older builds read
+        // OPENCODE_SERVER_PASSWORD. Set both so one binary works either way.
+        .env("OPENCODE_PASSWORD", &password)
         .current_dir(&config.project_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -351,9 +372,15 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::SendPrompt { session_id, text } => {
-            let text = text.trim().to_string();
-            if text.is_empty() {
+        EngineCommand::SendPrompt {
+            session_id,
+            request,
+        } => {
+            if request.text.trim().is_empty()
+                && request.files.is_empty()
+                && request.agents.is_empty()
+                && request.skills.is_empty()
+            {
                 return event(EngineEvent::CommandFailed {
                     message: "A prompt cannot be empty.".into(),
                 });
@@ -361,7 +388,7 @@ async fn run_command(
             let call_id = session_id.clone();
             tokio::select! {
                 _ = &mut *shutdown => CommandResult::Shutdown,
-                result = api.prompt(&call_id, text) => event(match result {
+                result = api.prompt(&call_id, request) => event(match result {
                     Ok(message) => {
                         tracing::debug!(session = %call_id, "queued prompt");
                         EngineEvent::PromptAccepted { session_id, message }
@@ -370,6 +397,89 @@ async fn run_command(
                         message: format!("Could not send the message: {message}"),
                     },
                 }),
+            }
+        }
+        EngineCommand::RunCommand {
+            session_id,
+            request,
+        } => {
+            if request.name.trim().is_empty() {
+                return event(EngineEvent::CommandFailed {
+                    message: "Choose a command before sending.".into(),
+                });
+            }
+            let call_id = session_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.command(&call_id, request) => event(match result {
+                    Ok(()) => {
+                        tracing::debug!(session = %call_id, "ran command");
+                        EngineEvent::CommandAccepted { session_id }
+                    }
+                    Err(message) => EngineEvent::CommandFailed {
+                        message: format!("Could not run the command: {message}"),
+                    },
+                }),
+            }
+        }
+        EngineCommand::SetSessionModel { session_id, model } => {
+            let call_id = session_id.clone();
+            let call_model = model.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.set_model(&call_id, call_model) => event(match result {
+                    Ok(()) => {
+                        tracing::debug!(session = %call_id, "changed model");
+                        EngineEvent::SessionModelSet { session_id, model }
+                    }
+                    Err(message) => EngineEvent::CommandFailed {
+                        message: format!("Could not change the model: {message}"),
+                    },
+                }),
+            }
+        }
+        EngineCommand::SetSessionAgent { session_id, agent } => {
+            let call_id = session_id.clone();
+            let call_agent = agent.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.set_agent(&call_id, call_agent) => event(match result {
+                    Ok(()) => {
+                        tracing::debug!(session = %call_id, "changed agent");
+                        EngineEvent::SessionAgentSet { session_id, agent }
+                    }
+                    Err(message) => EngineEvent::CommandFailed {
+                        message: format!("Could not change the agent: {message}"),
+                    },
+                }),
+            }
+        }
+        EngineCommand::FindFiles {
+            request_id,
+            query,
+            limit,
+        } => {
+            let call_query = query.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.find_files(&call_query, limit) => event(EngineEvent::FilesFound {
+                    request_id,
+                    result,
+                }),
+            }
+        }
+        EngineCommand::ListCatalog { request_id, kind } => {
+            let load = async {
+                match kind {
+                    CatalogKind::Commands => api.commands().await.map(CatalogData::Commands),
+                    CatalogKind::Skills => api.skills().await.map(CatalogData::Skills),
+                    CatalogKind::Agents => api.agents().await.map(CatalogData::Agents),
+                    CatalogKind::Models => api.models().await.map(CatalogData::Models),
+                }
+            };
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = load => event(EngineEvent::CatalogLoaded { request_id, kind, result }),
             }
         }
         EngineCommand::Interrupt { session_id } => {

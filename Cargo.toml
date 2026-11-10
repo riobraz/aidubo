@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/engine",
     "crates/protocol",
+    "crates/term",
     "crates/ui",
     "crates/views",
 ]

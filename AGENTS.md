@@ -181,6 +181,17 @@ here, and prefer clarifying an existing rule over adding a vague new one.
 - Lint via `make clippy` (the same `cargo clippy --workspace --all-targets -- -D
   warnings` invocation).
 
+## Clean room
+
+- Implement every feature from documented contracts, published specs, and
+  black-box observation. Never copy source, identifiers, comments, assets, or
+  string tables from OpenChamber, Monocode, OpenCode's UI, or any other
+  reference implementation.
+- The OpenAPI document, `/doc`, the event list, and the reference projects'
+  published behavior are contracts, not code to port.
+- Do not vendor reference code. Reimplement behavior in this codebase's own
+  terms, with its own tests, and keep the provenance in the plan.
+
 ## Security
 
 - Bind only to loopback; never expose the sidecar on a non-loopback interface.

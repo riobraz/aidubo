@@ -1,6 +1,7 @@
 //! The M1 workspace: project-scoped sessions.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, Theme as KitTheme, ThemeMode, TitleBar,
@@ -10,12 +11,77 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    Content, EngineStatus, Entry, PermissionQueue, SessionStore, ToolCall, ToolStatus,
-    TranscriptStore, now_ms, relative_time,
+    Content, DraftSend, EngineStatus, Entry, PermissionQueue, PickerEffect, PickerItem, PickerKind,
+    PickerState, PromptDraft, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore,
+    now_ms, path_to_file_uri, relative_time,
 };
-use harness_engine::{Engine, EngineEvent, PermissionReply, StreamEvent};
-use harness_protocol::{PermissionRequest, Session};
-use harness_ui::{Theme, status_dot};
+use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
+use harness_protocol::{AgentInfo, CommandInfo, ModelInfo, PermissionRequest, Session, SkillInfo};
+use harness_ui::{Theme, attachment_chip, status_dot};
+
+/// Server-backed lists the composer pickers filter locally.
+#[derive(Debug, Default)]
+struct CatalogCache {
+    commands: Vec<CommandInfo>,
+    skills: Vec<SkillInfo>,
+    agents: Vec<AgentInfo>,
+    models: Vec<ModelInfo>,
+}
+
+impl CatalogCache {
+    fn items(&self, kind: PickerKind) -> Vec<PickerItem> {
+        match kind {
+            PickerKind::Command => self
+                .commands
+                .iter()
+                .map(|command| PickerItem::Command {
+                    name: command.name.clone(),
+                    description: command.description.clone(),
+                })
+                .collect(),
+            PickerKind::Skill => self
+                .skills
+                .iter()
+                .map(|skill| PickerItem::Skill {
+                    id: skill.id.clone(),
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                })
+                .collect(),
+            PickerKind::File | PickerKind::Agent => self.agents_items(),
+            PickerKind::Model => self
+                .models
+                .iter()
+                .filter(|model| model.enabled)
+                .map(|model| PickerItem::Model {
+                    model: model.model_ref(),
+                    name: model.name.clone(),
+                    provider_id: model.provider_id.clone(),
+                })
+                .collect(),
+            PickerKind::Snippet => SNIPPETS
+                .iter()
+                .map(|snippet| PickerItem::Snippet {
+                    name: snippet.name.to_string(),
+                    description: snippet.description.to_string(),
+                    expansion: snippet.expansion.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    fn agents_items(&self) -> Vec<PickerItem> {
+        self.agents
+            .iter()
+            .filter(|agent| !agent.hidden)
+            .map(|agent| PickerItem::Agent {
+                id: agent.id.clone(),
+                name: agent.name.clone(),
+                description: agent.description.clone(),
+            })
+            .collect()
+    }
+}
 
 gpui_kit::actions!(
     harness_views,
@@ -43,6 +109,15 @@ pub struct WorkspaceView {
     composer: Entity<TextareaState>,
     /// Sends the composer text when Enter is pressed.
     _composer_subscription: Subscription,
+    draft: PromptDraft,
+    /// The picker above the composer, for triggers or the model/agent badges.
+    picker: Option<PickerState>,
+    catalog: CatalogCache,
+    /// Search field used by the model and agent pickers.
+    picker_input: Option<Entity<InputState>>,
+    _picker_input_subscription: Option<Subscription>,
+    /// Debounces `@` file searches; dropping it cancels the pending query.
+    file_debounce: Option<Task<()>>,
     engine: Engine,
     _events_task: Task<()>,
 }
@@ -75,10 +150,26 @@ impl WorkspaceView {
         let composer_subscription = cx.subscribe_in(
             &composer,
             window,
-            |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = event {
-                    this.send_prompt(window, cx);
+            |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => this.composer_changed(cx),
+                InputEvent::PressEnter { shift: false, .. } => {
+                    if this
+                        .picker
+                        .as_ref()
+                        .is_some_and(|picker| !is_session_picker(picker.kind()))
+                    {
+                        if this
+                            .picker
+                            .as_ref()
+                            .is_some_and(|picker| picker.visible_len() > 0)
+                        {
+                            this.choose_selected(window, cx);
+                        }
+                    } else {
+                        this.send_prompt(window, cx);
+                    }
                 }
+                _ => {}
             },
         );
 
@@ -95,6 +186,12 @@ impl WorkspaceView {
             stream_connected: false,
             composer,
             _composer_subscription: composer_subscription,
+            draft: PromptDraft::default(),
+            picker: None,
+            catalog: CatalogCache::default(),
+            picker_input: None,
+            _picker_input_subscription: None,
+            file_debounce: None,
             engine,
             _events_task: events_task,
         }
@@ -107,6 +204,14 @@ impl WorkspaceView {
             }
             EngineEvent::Ready { version, port } => {
                 self.status = EngineStatus::Ready { version, port };
+                for (request_id, kind) in [
+                    (1, CatalogKind::Commands),
+                    (2, CatalogKind::Skills),
+                    (3, CatalogKind::Agents),
+                    (4, CatalogKind::Models),
+                ] {
+                    self.engine.list_catalog(request_id, kind);
+                }
             }
             EngineEvent::Failed { message } => {
                 self.status = EngineStatus::Failed { message };
@@ -170,6 +275,59 @@ impl WorkspaceView {
                     message.time.created,
                 );
             }
+            EngineEvent::CommandAccepted { session_id } => {
+                if self.sessions.selected_id() == Some(session_id.as_str()) {
+                    self.follow_selection();
+                }
+            }
+            EngineEvent::SessionModelSet { session_id, model } => {
+                if self.sessions.set_model(&session_id, model) {
+                    self.error = None;
+                }
+            }
+            EngineEvent::SessionAgentSet { session_id, agent } => {
+                if self.sessions.set_agent(&session_id, agent) {
+                    self.error = None;
+                }
+            }
+            EngineEvent::FilesFound { request_id, result } => {
+                if let Some(picker) = self.picker.as_mut()
+                    && picker.request_id() == request_id
+                {
+                    match result {
+                        Ok(entries) => {
+                            let items = entries
+                                .into_iter()
+                                .filter(|entry| entry.kind.is_empty() || entry.kind == "file")
+                                .map(|entry| PickerItem::File { path: entry.path });
+                            picker.apply_file_results(request_id, items);
+                        }
+                        Err(message) => picker.set_error(message),
+                    }
+                }
+            }
+            EngineEvent::CatalogLoaded { kind, result, .. } => match result {
+                Ok(data) => {
+                    match data {
+                        CatalogData::Commands(commands) => self.catalog.commands = commands,
+                        CatalogData::Skills(skills) => self.catalog.skills = skills,
+                        CatalogData::Agents(agents) => self.catalog.agents = agents,
+                        CatalogData::Models(models) => self.catalog.models = models,
+                    }
+                    if let Some(picker) = self.picker.as_mut()
+                        && catalog_kind(picker.kind()) == Some(kind)
+                    {
+                        picker.add_items(self.catalog.items(picker.kind()));
+                    }
+                }
+                Err(message) => {
+                    if let Some(picker) = self.picker.as_mut()
+                        && catalog_kind(picker.kind()) == Some(kind)
+                    {
+                        picker.set_error(message);
+                    }
+                }
+            },
             EngineEvent::Stream(event) => match event {
                 StreamEvent::PermissionAsked { request } => {
                     self.permissions.push(request);
@@ -227,6 +385,9 @@ impl WorkspaceView {
             EngineEvent::CommandFailed { message } => {
                 self.permission_in_flight = None;
                 self.error = Some(message);
+                // A failed model/agent change may have left an optimistic badge;
+                // the server snapshot is authoritative.
+                self.engine.refresh_sessions();
             }
         }
     }
@@ -248,17 +409,18 @@ impl WorkspaceView {
         }
     }
 
-    fn create_session(&mut self, cx: &mut Context<Self>) {
+    fn create_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
+        self.clear_composer(window, cx);
         if !self.engine.create_session() {
             self.error = Some("The engine is not running.".into());
         }
         cx.notify();
     }
 
-    fn select_session(&mut self, id: String, cx: &mut Context<Self>) {
+    fn select_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.sessions.selected_id() == Some(id.as_str()) {
             return;
         }
@@ -266,6 +428,7 @@ impl WorkspaceView {
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
+        self.clear_composer(window, cx);
         self.follow_selection();
         cx.notify();
     }
@@ -367,14 +530,280 @@ impl WorkspaceView {
 
     /// Close transient overlays (title editor, delete confirmation, errors).
     fn cancel_overlays(&mut self, cx: &mut Context<Self>) {
-        let had_overlay =
-            self.renaming.is_some() || self.pending_delete.is_some() || self.error.is_some();
+        let had_overlay = self.renaming.is_some()
+            || self.pending_delete.is_some()
+            || self.error.is_some()
+            || self.picker.is_some();
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
+        self.close_picker();
         if had_overlay {
             cx.notify();
         }
+    }
+
+    fn composer_changed(&mut self, cx: &mut Context<Self>) {
+        let (text, cursor, collapsed) = {
+            let input = self.composer.read(cx);
+            let range = input.selected_range();
+            (input.value().to_string(), range.end, range.is_empty())
+        };
+        self.draft.edit(text, cursor, collapsed);
+        self.sync_trigger_picker(cx);
+    }
+
+    /// Open, update, or close the picker for the draft's current trigger.
+    fn sync_trigger_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(trigger) = self.draft.trigger().cloned() else {
+            self.close_picker();
+            return;
+        };
+        let kind = PickerKind::for_trigger(trigger.kind);
+        self.ensure_catalog(kind);
+        let items = self.catalog.items(kind);
+        let effect = match self.picker.as_mut() {
+            Some(picker) if picker.kind() == kind => picker.update_query(trigger.query),
+            _ => {
+                let (picker, effect) = PickerState::open(kind, trigger.query, items);
+                self.picker = Some(picker);
+                effect
+            }
+        };
+        self.schedule_picker_effect(effect, cx);
+        cx.notify();
+    }
+
+    fn schedule_picker_effect(&mut self, effect: PickerEffect, cx: &mut Context<Self>) {
+        let PickerEffect::FetchFiles { request_id, query } = effect else {
+            return;
+        };
+        self.file_debounce = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            let _ = this.update(cx, |this, _| {
+                this.engine.find_files(request_id, query, 24);
+            });
+        }));
+    }
+
+    fn ensure_catalog(&self, kind: PickerKind) {
+        let (request_id, catalog) = match kind {
+            PickerKind::Command => (1, CatalogKind::Commands),
+            PickerKind::Skill => (2, CatalogKind::Skills),
+            PickerKind::File | PickerKind::Agent => (3, CatalogKind::Agents),
+            PickerKind::Model => (4, CatalogKind::Models),
+            PickerKind::Snippet => return,
+        };
+        let empty = match kind {
+            PickerKind::Command => self.catalog.commands.is_empty(),
+            PickerKind::Skill => self.catalog.skills.is_empty(),
+            PickerKind::File | PickerKind::Agent => self.catalog.agents.is_empty(),
+            PickerKind::Model => self.catalog.models.is_empty(),
+            PickerKind::Snippet => false,
+        };
+        if empty {
+            self.engine.list_catalog(request_id, catalog);
+        }
+    }
+
+    fn choose_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self
+            .picker
+            .as_ref()
+            .and_then(PickerState::selected)
+            .cloned()
+        else {
+            return;
+        };
+        self.choose_item(item, window, cx);
+    }
+
+    fn choose_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self
+            .picker
+            .as_ref()
+            .and_then(|picker| picker.visible().nth(index))
+            .cloned()
+        else {
+            return;
+        };
+        self.choose_item(item, window, cx);
+    }
+
+    fn choose_item(&mut self, item: PickerItem, window: &mut Window, cx: &mut Context<Self>) {
+        let picker_kind = self.picker.as_ref().map(PickerState::kind);
+        match item {
+            PickerItem::File { path } => {
+                let uri = path_to_file_uri(&self.project_dir.join(&path).to_string_lossy());
+                if let Some(edit) = self.draft.select_file(path, uri) {
+                    self.apply_draft_edit(edit, window, cx);
+                }
+            }
+            PickerItem::Agent { id, .. } if picker_kind == Some(PickerKind::Agent) => {
+                let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
+                    self.error = Some("Select a session first.".into());
+                    self.close_picker();
+                    cx.notify();
+                    return;
+                };
+                self.sessions.set_agent(&session_id, id.clone());
+                self.error = None;
+                self.close_picker();
+                if !self.engine.set_session_agent(session_id, id) {
+                    self.error = Some("The engine is not running.".into());
+                }
+                self.focus_composer(window, cx);
+            }
+            PickerItem::Agent { name, .. } => {
+                if let Some(edit) = self.draft.select_agent(name) {
+                    self.apply_draft_edit(edit, window, cx);
+                }
+            }
+            PickerItem::Command { name, .. } => {
+                if let Some(edit) = self.draft.select_command(name) {
+                    self.apply_draft_edit(edit, window, cx);
+                }
+            }
+            PickerItem::Skill { id, name, .. } => {
+                if let Some(edit) = self.draft.select_skill(id, name) {
+                    self.apply_draft_edit(edit, window, cx);
+                }
+            }
+            PickerItem::Snippet { expansion, .. } => {
+                if let Some(edit) = self.draft.select_snippet(&expansion) {
+                    self.apply_draft_edit(edit, window, cx);
+                }
+            }
+            PickerItem::Model { model, .. } => {
+                let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
+                    self.error = Some("Select a session first.".into());
+                    self.close_picker();
+                    cx.notify();
+                    return;
+                };
+                self.sessions.set_model(&session_id, model.clone());
+                self.error = None;
+                self.close_picker();
+                if !self.engine.set_session_model(session_id, model) {
+                    self.error = Some("The engine is not running.".into());
+                }
+                self.focus_composer(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn apply_draft_edit(
+        &mut self,
+        edit: harness_core::DraftEdit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer.update(cx, |input, cx| {
+            input.set_value(edit.text.clone(), window, cx);
+            input.set_selected_range(edit.cursor..edit.cursor, cx);
+            input.focus(window, cx);
+        });
+        // `set_value` does not emit Change; resync from the same edit.
+        self.draft.edit(edit.text, edit.cursor, true);
+        self.close_picker();
+    }
+
+    fn remove_file_chip(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = self.draft.remove_file(index) {
+            self.apply_draft_edit(edit, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_picker(&mut self) {
+        self.picker = None;
+        self.picker_input = None;
+        self._picker_input_subscription = None;
+        self.file_debounce = None;
+    }
+
+    /// Handle the keys the composer intercepts while a picker is open.
+    ///
+    /// Attached in the capture phase on the whole composer so it also fires
+    /// when the model/agent search input holds focus. Enter is left to the
+    /// textarea and search-input subscriptions.
+    fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.picker.is_none() {
+            return false;
+        }
+        match key {
+            "escape" => {
+                self.close_picker();
+                self.focus_composer(window, cx);
+            }
+            "up" | "down" => {
+                let Some(picker) = self.picker.as_mut() else {
+                    return false;
+                };
+                picker.move_highlight(if key == "up" { -1 } else { 1 });
+            }
+            "tab" => {
+                if !self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| picker.visible_len() > 0)
+                {
+                    return false;
+                }
+                self.choose_selected(window, cx);
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    fn open_session_picker(
+        &mut self,
+        kind: PickerKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ensure_catalog(kind);
+        let (picker, _) = PickerState::open(kind, "", self.catalog.items(kind));
+        self.picker = Some(picker);
+        self.file_debounce = None;
+
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search…"));
+        input.update(cx, |input, cx| input.focus(window, cx));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    let query = input.read(cx).value().to_string();
+                    if let Some(picker) = this.picker.as_mut() {
+                        picker.update_query(query);
+                    }
+                    cx.notify();
+                }
+                InputEvent::PressEnter { shift: false, .. } => {
+                    this.choose_selected(window, cx);
+                }
+                _ => {}
+            },
+        );
+        self.picker_input = Some(input);
+        self._picker_input_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    /// Focus the composer, cancelling any open picker first.
+    fn clear_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.focus(window, cx);
+        });
+        self.draft.clear();
+        self.close_picker();
     }
 
     fn send_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -383,15 +812,17 @@ impl WorkspaceView {
             cx.notify();
             return;
         };
-        let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() {
+        let Some(send) = self.draft.to_send() else {
             return;
-        }
+        };
 
         self.error = None;
-        if self.engine.send_prompt(id, text) {
-            self.composer
-                .update(cx, |input, cx| input.set_value("", window, cx));
+        let accepted = match &send {
+            DraftSend::Prompt(request) => self.engine.send_prompt(id, request.clone()),
+            DraftSend::Command(request) => self.engine.run_command(id, request.clone()),
+        };
+        if accepted {
+            self.clear_composer(window, cx);
         } else {
             self.error = Some("The engine is not running.".into());
         }
@@ -590,7 +1021,9 @@ impl WorkspaceView {
                             .primary()
                             .label("New")
                             .disabled(!ready)
-                            .on_click(cx.listener(|this, _, _, cx| this.create_session(cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.create_session(window, cx)),
+                            ),
                     ),
             )
             .child(div().h(px(1.)).bg(theme.border))
@@ -650,7 +1083,9 @@ impl WorkspaceView {
             .rounded_md()
             .cursor_pointer()
             .hover(|style| style.bg(theme.border))
-            .on_click(cx.listener(move |this, _, _, cx| this.select_session(id.clone(), cx)));
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.select_session(id.clone(), window, cx)),
+            );
 
         let row = if selected { row.bg(theme.border) } else { row };
 
@@ -787,7 +1222,7 @@ impl WorkspaceView {
                     .small()
                     .primary()
                     .label("New session")
-                    .on_click(cx.listener(|this, _, _, cx| this.create_session(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.create_session(window, cx))),
             )
         } else {
             pane
@@ -1238,41 +1673,243 @@ impl WorkspaceView {
     fn composer_bar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.transcript.is_busy();
         let ready = self.status.is_ready() && self.sessions.selected_id().is_some();
+        let model_label = self
+            .sessions
+            .selected()
+            .and_then(|session| session.model.as_ref())
+            .map(|model| model.id.clone())
+            .unwrap_or_else(|| "Model".into());
+        let agent_label = self
+            .sessions
+            .selected()
+            .and_then(|session| session.agent.clone())
+            .unwrap_or_else(|| "Agent".into());
 
-        let mut bar = div()
+        let mut column = div()
             .border_t_1()
             .border_color(theme.border)
             .p_4()
             .flex()
-            .items_end()
-            .gap_2()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Textarea::new(&self.composer).h(px(84.))),
-            );
+            .flex_col()
+            .gap_2();
 
-        if busy {
-            bar = bar.child(
+        let has_chips = !self.draft.files().is_empty()
+            || !self.draft.agents().is_empty()
+            || !self.draft.skills().is_empty()
+            || self.draft.command().is_some();
+        if has_chips {
+            let mut chips = div().flex().flex_wrap().gap_2();
+            for (index, file) in self.draft.files().iter().enumerate() {
+                chips = chips.child(attachment_chip(
+                    &theme,
+                    file.path.clone(),
+                    SharedString::from(format!("file-chip-{index}")),
+                    cx.listener(move |this, _, window, cx| {
+                        this.remove_file_chip(index, window, cx)
+                    }),
+                ));
+            }
+            for (index, agent) in self.draft.agents().iter().enumerate() {
+                chips = chips.child(attachment_chip(
+                    &theme,
+                    format!("@{}", agent.name),
+                    SharedString::from(format!("agent-chip-{index}")),
+                    cx.listener(move |this, _, _, cx| {
+                        this.draft.remove_agent(index);
+                        cx.notify();
+                    }),
+                ));
+            }
+            for (index, skill) in self.draft.skills().iter().enumerate() {
+                chips = chips.child(attachment_chip(
+                    &theme,
+                    format!("${}", skill.name),
+                    SharedString::from(format!("skill-chip-{index}")),
+                    cx.listener(move |this, _, _, cx| {
+                        this.draft.remove_skill(index);
+                        cx.notify();
+                    }),
+                ));
+            }
+            if let Some(command) = self.draft.command() {
+                chips = chips.child(attachment_chip(
+                    &theme,
+                    format!("/{}", command.name),
+                    "command-chip-remove",
+                    cx.listener(|this, _, window, cx| this.remove_command_chip(window, cx)),
+                ));
+            }
+            column = column.child(chips);
+        }
+
+        if let Some(picker) = &self.picker {
+            let mut panel = div()
+                .id("composer-picker-panel")
+                .debug_selector(|| "composer-picker".into())
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .max_h(px(280.))
+                .overflow_y_scroll()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(picker.kind().title()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(if picker.loading() { "Searching…" } else { "" }),
+                        ),
+                );
+
+            if let Some(input) = &self.picker_input {
+                panel = panel.child(Input::new(input).w_full());
+            }
+
+            if let Some(error) = picker.error() {
+                panel = panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .child(error.to_owned()),
+                );
+            } else if picker.visible_len() == 0 {
+                panel = panel.child(div().text_xs().text_color(theme.muted).child("No matches."));
+            } else {
+                for (index, item) in picker.visible().take(8).enumerate() {
+                    let selected = picker.highlighted() == index;
+                    let label = item.label();
+                    let detail = item.detail();
+                    let mut row = div()
+                        .id(SharedString::from(format!("picker-row-{index}")))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.border))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_index(index, window, cx)
+                        }))
+                        .child(div().flex_1().min_w_0().truncate().text_sm().child(label));
+                    if !detail.is_empty() {
+                        row = row.child(
+                            div()
+                                .max_w(px(320.))
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(detail),
+                        );
+                    }
+                    panel = panel.child(if selected { row.bg(theme.border) } else { row });
+                }
+            }
+
+            column = column.child(panel);
+        }
+
+        let input_row = div().flex().items_end().gap_2().child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Textarea::new(&self.composer).h(px(84.))),
+        );
+
+        let input_row = if busy {
+            input_row.child(
                 Button::new("stop-turn")
                     .small()
                     .danger()
                     .label("Stop")
                     .on_click(cx.listener(|this, _, _, cx| this.stop_turn(cx))),
-            );
+            )
         } else {
-            bar = bar.child(
+            input_row.child(
                 Button::new("send-prompt")
                     .small()
                     .primary()
                     .label("Send")
                     .disabled(!ready)
                     .on_click(cx.listener(|this, _, window, cx| this.send_prompt(window, cx))),
-            );
-        }
+            )
+        };
+        column = column.child(input_row);
 
-        bar
+        let weak = cx.weak_entity();
+        column
+            .capture_key_down(move |event, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if !matches!(key, "up" | "down" | "escape" | "tab") {
+                    return;
+                }
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let handled = this.update(cx, |this, cx| this.picker_key(key, window, cx));
+                if handled {
+                    cx.stop_propagation();
+                }
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("model-picker")
+                            .small()
+                            .ghost()
+                            .label(model_label)
+                            .disabled(!ready)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_session_picker(PickerKind::Model, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("agent-picker")
+                            .small()
+                            .ghost()
+                            .label(agent_label)
+                            .disabled(!ready)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_session_picker(PickerKind::Agent, window, cx)
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child("@ files · / commands · $ skills · # snippets"),
+                    ),
+            )
+    }
+
+    fn remove_command_chip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = self.draft.remove_command() {
+            self.apply_draft_edit(edit, window, cx);
+        } else {
+            self.draft.clear_command();
+        }
+        cx.notify();
     }
 
     fn rename_panel(
@@ -1364,6 +2001,20 @@ impl WorkspaceView {
     }
 }
 
+fn is_session_picker(kind: PickerKind) -> bool {
+    matches!(kind, PickerKind::Model | PickerKind::Agent)
+}
+
+fn catalog_kind(kind: PickerKind) -> Option<CatalogKind> {
+    match kind {
+        PickerKind::Command => Some(CatalogKind::Commands),
+        PickerKind::Skill => Some(CatalogKind::Skills),
+        PickerKind::File | PickerKind::Agent => Some(CatalogKind::Agents),
+        PickerKind::Model => Some(CatalogKind::Models),
+        PickerKind::Snippet => None,
+    }
+}
+
 /// Collapse whitespace so an argument summary stays on one line.
 fn one_line(text: &str, max_chars: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1414,7 +2065,9 @@ impl Render for WorkspaceView {
         let theme = Theme::current(cx);
         div()
             .key_context("Workspace")
-            .on_action(cx.listener(|this, _: &NewSession, _, cx| this.create_session(cx)))
+            .on_action(
+                cx.listener(|this, _: &NewSession, window, cx| this.create_session(window, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &ToggleTheme, window, cx| this.toggle_theme(window, cx)),
             )
@@ -1446,7 +2099,9 @@ mod tests {
     use std::path::PathBuf;
 
     use gpui_kit::component::Theme as KitTheme;
-    use gpui_kit::{Modifiers, TestAppContext, point, px};
+    use gpui_kit::component::input::InputEvent;
+    use gpui_kit::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
+    use harness_core::{DraftSend, PickerItem, PickerKind, PickerState};
     use harness_engine::{Engine, EngineConfig};
 
     use super::WorkspaceView;
@@ -1481,5 +2136,188 @@ mod tests {
         cx.simulate_click(bar_center, Modifiers::none());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("workspace-title-bar").is_some());
+    }
+
+    #[gpui_kit::test]
+    fn typing_a_file_trigger_inserts_the_selected_mention(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(KitTheme::default()));
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-composer-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.composer.update(cx, |input, cx| {
+                    input.set_value("@src/ma", window, cx);
+                    input.set_selected_range(7..7, cx);
+                });
+                view.composer_changed(cx);
+                assert_eq!(
+                    view.picker.as_ref().map(PickerState::kind),
+                    Some(PickerKind::File)
+                );
+
+                let request_id = view.picker.as_ref().unwrap().request_id();
+                view.picker.as_mut().unwrap().apply_file_results(
+                    request_id,
+                    [PickerItem::File {
+                        path: "src/main.rs".into(),
+                    }],
+                );
+                view.choose_selected(window, cx);
+
+                assert!(view.picker.is_none());
+                assert_eq!(view.composer.read(cx).value().as_ref(), "@src/main.rs");
+
+                let Some(DraftSend::Prompt(request)) = view.draft.to_send() else {
+                    panic!("expected a prompt");
+                };
+                assert_eq!(request.files.len(), 1);
+                let mention = request.files[0].mention.as_ref().unwrap();
+                assert_eq!((mention.start, mention.end), (0, 12));
+                assert_eq!(
+                    request.files[0].uri,
+                    "file:///tmp/rust-harness-composer-test/src/main.rs"
+                );
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn enter_with_the_picker_open_chooses_instead_of_sending(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-composer-enter-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.composer.update(cx, |input, cx| {
+                    input.set_value("@src/ma", window, cx);
+                    input.set_selected_range(7..7, cx);
+                    input.focus(window, cx);
+                });
+                view.composer_changed(cx);
+                assert!(view.picker.is_some());
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        // With no results yet, Enter must not send the message.
+        press_enter(&view, cx);
+        cx.update(|window, cx| {
+            let _ = window;
+            view.update(cx, |view, _| {
+                assert!(view.picker.is_some());
+                assert!(view.error.is_none());
+                assert_eq!(view.draft.text(), "@src/ma");
+            });
+        });
+
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                let request_id = view.picker.as_ref().unwrap().request_id();
+                view.picker.as_mut().unwrap().apply_file_results(
+                    request_id,
+                    [PickerItem::File {
+                        path: "src/main.rs".into(),
+                    }],
+                );
+            });
+        });
+
+        press_enter(&view, cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                assert!(view.picker.is_none());
+                assert_eq!(view.draft.text(), "@src/main.rs");
+                assert_eq!(view.draft.files().len(), 1);
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn picker_keys_navigate_choose_and_close(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-composer-keys-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+        });
+
+        let items = [
+            PickerItem::Snippet {
+                name: "review".into(),
+                description: String::new(),
+                expansion: "Review the diff.".into(),
+            },
+            PickerItem::Snippet {
+                name: "test".into(),
+                description: String::new(),
+                expansion: "Run the tests.".into(),
+            },
+        ];
+
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.composer.update(cx, |input, cx| {
+                    input.set_value("#", window, cx);
+                    input.set_selected_range(1..1, cx);
+                });
+                view.draft.edit("#", 1, true);
+
+                let (picker, _) = PickerState::open(PickerKind::Snippet, "", items.to_vec());
+                view.picker = Some(picker);
+
+                assert!(view.picker_key("down", window, cx));
+                assert_eq!(view.picker.as_ref().unwrap().highlighted(), 1);
+                assert!(view.picker_key("up", window, cx));
+                assert_eq!(view.picker.as_ref().unwrap().highlighted(), 0);
+
+                assert!(view.picker_key("tab", window, cx));
+                assert!(view.picker.is_none());
+                assert_eq!(view.draft.text(), "Review the diff.");
+            });
+
+            view.update(cx, |view, cx| {
+                let (picker, _) = PickerState::open(PickerKind::Snippet, "", items.to_vec());
+                view.picker = Some(picker);
+
+                assert!(view.picker_key("escape", window, cx));
+                assert!(view.picker.is_none());
+            });
+        });
+    }
+
+    /// Deliver Enter to the composer the way a keypress would, after the
+    /// current entity update has finished.
+    fn press_enter(view: &Entity<WorkspaceView>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let composer = view.composer.clone();
+                cx.defer_in(window, move |_, _, cx| {
+                    composer.update(cx, |_, cx| {
+                        cx.emit(InputEvent::PressEnter {
+                            secondary: false,
+                            shift: false,
+                        });
+                    });
+                });
+            });
+        });
+        cx.background_executor.run_until_parked();
     }
 }

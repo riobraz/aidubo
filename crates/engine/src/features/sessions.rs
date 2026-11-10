@@ -1,0 +1,69 @@
+//! Session CRUD against the project-scoped API.
+
+use harness_protocol::{
+    CreateSessionRequest, Envelope, Session, SessionList, SessionLocation, UpdateSessionRequest,
+};
+use reqwest::Method;
+
+use crate::api::{SessionApi, decode_error, ensure_success, network_error};
+
+impl SessionApi {
+    /// Root sessions in this project, newest first.
+    pub async fn list(&self) -> Result<Vec<Session>, String> {
+        let response = self
+            .request(Method::GET, "/api/session")
+            .query(&[
+                ("directory", self.directory.as_str()),
+                ("parentID", "null"),
+                ("limit", "100"),
+                ("order", "desc"),
+            ])
+            .send()
+            .await
+            .map_err(network_error)?;
+        let response = ensure_success(response).await?;
+        let list: SessionList = response.json().await.map_err(decode_error)?;
+        Ok(list.data)
+    }
+
+    /// Create a root session pinned to this project.
+    pub async fn create(&self) -> Result<Session, String> {
+        let request = CreateSessionRequest {
+            title: None,
+            location: Some(SessionLocation {
+                directory: self.directory.clone(),
+            }),
+        };
+        let response = self
+            .request(Method::POST, "/api/session")
+            .json(&request)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let response = ensure_success(response).await?;
+        let envelope: Envelope<Session> = response.json().await.map_err(decode_error)?;
+        Ok(envelope.data)
+    }
+
+    pub async fn rename(&self, id: &str, title: String) -> Result<(), String> {
+        let request = UpdateSessionRequest { title: Some(title) };
+        let response = self
+            .request(Method::PATCH, &format!("/api/session/{id}"))
+            .json(&request)
+            .send()
+            .await
+            .map_err(network_error)?;
+        ensure_success(response).await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<(), String> {
+        let response = self
+            .request(Method::DELETE, &format!("/api/session/{id}"))
+            .send()
+            .await
+            .map_err(network_error)?;
+        ensure_success(response).await?;
+        Ok(())
+    }
+}

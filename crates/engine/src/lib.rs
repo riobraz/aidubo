@@ -2,17 +2,33 @@
 
 mod api;
 mod events;
+mod features;
 mod locate;
 mod supervisor;
+
+#[cfg(test)]
+mod api_tests;
 
 use std::path::PathBuf;
 
 use async_channel::{Receiver, Sender};
 use tokio::sync::oneshot;
 
-pub use harness_protocol::{ExecutionOutcome, PermissionReply, StreamEvent};
+pub use harness_protocol::{
+    AgentInfo, CatalogKind, CommandInfo, CommandRequest, ExecutionOutcome, FileEntry, ModelInfo,
+    ModelRef, PermissionReply, PromptRequest, SkillInfo, StreamEvent,
+};
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
+
+/// A catalog snapshot returned by the supervisor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogData {
+    Commands(Vec<CommandInfo>),
+    Skills(Vec<SkillInfo>),
+    Agents(Vec<AgentInfo>),
+    Models(Vec<ModelInfo>),
+}
 
 /// Configuration for one sidecar instance.
 #[derive(Debug, Clone)]
@@ -58,7 +74,33 @@ pub enum EngineCommand {
     /// Send a prompt; the reply streams back through the event channel.
     SendPrompt {
         session_id: String,
-        text: String,
+        request: PromptRequest,
+    },
+    /// Run a slash command in a session.
+    RunCommand {
+        session_id: String,
+        request: CommandRequest,
+    },
+    /// Ask the server to change a session's model.
+    SetSessionModel {
+        session_id: String,
+        model: ModelRef,
+    },
+    /// Ask the server to change a session's agent.
+    SetSessionAgent {
+        session_id: String,
+        agent: String,
+    },
+    /// Search project files for the `@` picker.
+    FindFiles {
+        request_id: u64,
+        query: String,
+        limit: usize,
+    },
+    /// Load one server-backed catalog.
+    ListCatalog {
+        request_id: u64,
+        kind: CatalogKind,
     },
     /// Interrupt the running turn.
     Interrupt {
@@ -151,11 +193,49 @@ impl Engine {
 
     /// Send a prompt to a session. The reply arrives as [`EngineEvent::Stream`]
     /// updates on [`Engine::events`].
-    pub fn send_prompt(&self, id: impl Into<String>, text: impl Into<String>) -> bool {
+    pub fn send_prompt(&self, id: impl Into<String>, request: PromptRequest) -> bool {
         self.send(EngineCommand::SendPrompt {
             session_id: id.into(),
-            text: text.into(),
+            request,
         })
+    }
+
+    /// Run a slash command in a session.
+    pub fn run_command(&self, id: impl Into<String>, request: CommandRequest) -> bool {
+        self.send(EngineCommand::RunCommand {
+            session_id: id.into(),
+            request,
+        })
+    }
+
+    /// Ask the server to switch the session's model.
+    pub fn set_session_model(&self, id: impl Into<String>, model: ModelRef) -> bool {
+        self.send(EngineCommand::SetSessionModel {
+            session_id: id.into(),
+            model,
+        })
+    }
+
+    /// Ask the server to switch the session's agent.
+    pub fn set_session_agent(&self, id: impl Into<String>, agent: impl Into<String>) -> bool {
+        self.send(EngineCommand::SetSessionAgent {
+            session_id: id.into(),
+            agent: agent.into(),
+        })
+    }
+
+    /// Search project files for the composer's `@` picker.
+    pub fn find_files(&self, request_id: u64, query: impl Into<String>, limit: usize) -> bool {
+        self.send(EngineCommand::FindFiles {
+            request_id,
+            query: query.into(),
+            limit,
+        })
+    }
+
+    /// Load one server-backed catalog.
+    pub fn list_catalog(&self, request_id: u64, kind: CatalogKind) -> bool {
+        self.send(EngineCommand::ListCatalog { request_id, kind })
     }
 
     /// Interrupt the running turn in a session.

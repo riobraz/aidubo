@@ -27,7 +27,9 @@ in GPUI. No TypeScript runs in our process; no OpenChamber code is embedded.
 - Multi-window and collaboration.
 - Reimplementing the agent loop.
 
-These are the differentiators to earn after the core loop is solid.
+These are the differentiators to earn after the core loop is solid. They remain
+out of scope until a milestone plan is accepted; the proposed sequence and the
+OpenCode API evidence for each are in [`ROADMAP.md`](ROADMAP.md).
 
 ## 2. Verified baseline (2026-11-08)
 
@@ -94,7 +96,9 @@ Rules:
 2. **Pick a port**: bind `127.0.0.1:0`, read the assigned port, close, then pass it
    to `opencode serve --hostname 127.0.0.1 --port <port>`. Retry on collision.
 3. **Authenticate**: generate a random per-launch password and set
-   `OPENCODE_SERVER_PASSWORD` (username defaults to `opencode`). Never bind to a
+   `OPENCODE_SERVER_PASSWORD` (username defaults to `opencode`). Verified on
+   v2.2.6: it reads **`OPENCODE_PASSWORD`**, not `OPENCODE_SERVER_PASSWORD`, so
+   the engine sets both; otherwise every `/api/*` route answers 401. Never bind to a
    non-loopback interface. Verified on v2.1.4: every `/api/*` route returns
    `401 {"_tag":"UnauthorizedError"}` without credentials, while `/` serves the
    web UI unauthenticated.
@@ -195,6 +199,8 @@ MVP endpoints:
 | Sessions | `GET /api/session`, `POST /api/session`, `GET/PATCH/DELETE /api/session/:id`, `POST /api/session/:id/interrupt` |
 | Messages | `GET /api/session/:id/message`, `POST /api/session/:id/prompt` |
 | Permissions | `GET /api/session/:id/permission`, `POST /api/session/:id/permission/:requestID/reply` |
+| Composer catalogs | `GET /api/fs/find`, `GET /api/command`, `GET /api/skill`, `GET /api/agent`, `GET /api/model` |
+| Session settings | `POST /api/session/:id/command`, `POST /api/session/:id/model`, `POST /api/session/:id/agent` |
 | Events | `GET /api/event` (SSE) |
 | Spec | `GET /openapi.json` (basic auth) |
 
@@ -246,6 +252,25 @@ and `StreamConnected` each time a stream opens; the workspace shows a
 view reloads the selected session's transcript and pending permissions on
 reopen, honoring the resnapshot rule.
 
+For M8, verified on v2.2.6: file discovery is
+`GET /api/fs/find?location[directory]=…&query=…&type=file&limit=…` returning
+`{"data": [{path, type}]}`; the command, skill, agent, and model catalogs are
+`GET /api/command|skill|agent|model?location[directory]=…` returning
+`{"data": […]}`. `POST /api/session/:id/command` takes
+`{name, text, files?, agents?, skills?}` and replies `204`. `POST …/model`
+takes `{model: {id, providerID?, variant?}}` and `POST …/agent` takes
+`{agent}`; both reply `204`, so the UI confirms the change from the next
+session snapshot or the `model-switched`/`agent-switched` events.
+
+`POST /api/session/:id/prompt` now carries optional `files`, `agents`, and
+`skills`. A file attachment sends `uri`, `source: {"type":"uri","uri": …}`,
+`name`, and a `mention` range. The server treats mention offsets as UTF-16
+code units, the range starts at the `@` and excludes it from `text`, and the
+URI is `file://` plus the absolute path. The server echoes attachments on the
+accepted inbox message and in later snapshots, but the echoed file omits the
+top-level `uri` (the location lives only in `source`), so the wire type
+defaults that field.
+
 ## 6. UI architecture
 
 ### 6.1 GPUI data flow
@@ -264,12 +289,17 @@ Workspace (root view)
 ├── EngineStatus     connecting | ready | crashed | restarting
 ├── SessionStore     id → SessionSummary, active session, per-session status
 ├── ChatStore        id → Transcript { entries: Vec<Entry> }, stream buffers
-├── ComposerState    draft text, selected agent/model, sending state
+├── ComposerState    draft text, `PromptDraft`, attachment chips, picker
+├── CatalogCache     commands, skills, agents, models (request-ID guarded)
 └── PermissionQueue  pending permission requests (FIFO)
 ```
 
 `ChatStore` entries are an enum: user message, assistant text, reasoning, tool
 call, error, notice. Every entry carries its OpenCode part/message ID for upserts.
+`ComposerState` keeps the textarea entity in the view crate, while the
+semantic draft (`PromptDraft`: text, cursor, file/agent/skill attachments,
+selected command, active trigger) and the picker reducer live in
+`harness-core` with no GPUI or IO.
 
 ### 6.3 Views
 
@@ -284,7 +314,17 @@ call, error, notice. Every entry carries its OpenCode part/message ID for upsert
 - **MessagePart** — dispatch on part type; text uses markdown; tool calls show
   name, input summary, status, and collapsible output.
 - **Composer** — multiline input, IME-safe, Enter sends / Shift+Enter newline,
-  paste, undo, stop button while streaming.
+  paste, undo, stop button while streaming. Typing `@`, `/`, `$`, or `#` at a
+  token boundary opens a picker: files and agents from the sidecar, commands
+  and skills from its catalogs, snippets from a built-in table. Selecting an
+  item inserts a mention or attaches a chip; attached files, agents, skills,
+  and the chosen command render as removable chips above the input. A
+  `capture_key_down` handler on the composer container consumes Up/Down to
+  move the highlight, Tab or Enter to choose, and Esc to close while the
+  picker is open, whether focus is in the textarea or the model/agent search
+  field. The model and agent badges under the input read the selected
+  session's values and open the same picker; choosing one posts to the
+  session endpoint and reconciles from the next snapshot.
 - **PermissionSheet** — prompt above the composer with allow once/always/deny;
   it blocks the turn, not the UI.
 - **StatusBar** — engine state, project, model, token/cost summary when available.
@@ -414,6 +454,11 @@ As built in M7 (2026-11-08), macOS first:
 | M5 | Permissions | Requests appear, replies unblock the turn, UI stays responsive |
 | M6 | Polish | Markdown, keyboard shortcuts, themes, reconnect UX |
 | M7 | Packaging | Signed macOS app with bundled sidecar installs and runs clean |
+
+Post-MVP milestones (M8 and later) are sequenced in
+[`ROADMAP.md`](ROADMAP.md). They are proposals: each one starts with its own
+plan under `docs/plans/` and may change this architecture (M11 in particular
+changes the single-project engine model).
 
 ## 13. Risks and open questions
 

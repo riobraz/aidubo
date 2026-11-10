@@ -1,0 +1,496 @@
+{
+  "version": 1,
+  "generated": "2026-11-10",
+  "source": {
+    "roadmap": "docs/ROADMAP.md",
+    "opencode": "v2.2.6 /doc/openapi.json (139 paths, 147 event names)",
+    "references": "docs/research/references.md"
+  },
+  "nodes": [
+    {
+      "id": "E0",
+      "kind": "spec",
+      "title": "Engine and core module seams",
+      "file": "docs/specs/E0-engine-bus.md",
+      "lane": "foundation",
+      "wave": 0,
+      "size": "M",
+      "deps": [],
+      "e2e": "existing sidecar suite",
+      "status": "done"
+    },
+    {
+      "id": "T0",
+      "kind": "spec",
+      "title": "Shared e2e harness and scripted mock provider",
+      "file": "docs/specs/T0-e2e-harness.md",
+      "lane": "foundation",
+      "wave": 0,
+      "size": "M",
+      "deps": [],
+      "e2e": "tests/sidecar.rs using support::*",
+      "status": "done"
+    },
+    {
+      "id": "M14-02",
+      "kind": "spec",
+      "title": "VT parser and grid model",
+      "file": "docs/specs/M14-02-vt-model.md",
+      "lane": "terminal",
+      "wave": 0,
+      "size": "M",
+      "deps": [],
+      "e2e": "none (pure crate)",
+      "status": "done"
+    },
+    {
+      "id": "M9-01",
+      "kind": "spec",
+      "title": "Inbox: queue and steer",
+      "file": "docs/specs/M9-01-inbox.md",
+      "lane": "conversation",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M9-01.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M9-02",
+      "kind": "spec",
+      "title": "Fork a session at a message",
+      "file": "docs/specs/M9-02-fork.md",
+      "lane": "conversation",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M9-02.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M9-03",
+      "kind": "spec",
+      "title": "Stage, preview, and commit a revert",
+      "file": "docs/specs/M9-03-revert.md",
+      "lane": "conversation",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M9-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M9-04",
+      "kind": "spec",
+      "title": "Compaction and the context meter",
+      "file": "docs/specs/M9-04-compaction-context.md",
+      "lane": "conversation",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M9-04.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M9-05",
+      "kind": "spec",
+      "title": "Agent forms",
+      "file": "docs/specs/M9-05-forms.md",
+      "lane": "conversation",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M9-05.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M9-06",
+      "kind": "spec",
+      "title": "Usage totals and provider budgets",
+      "file": "docs/specs/M9-06-usage.md",
+      "lane": "conversation",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M9-06.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M10-01",
+      "kind": "spec",
+      "title": "Git status, base, and branch list",
+      "file": "docs/specs/M10-01-vcs-status.md",
+      "lane": "review",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M10-01.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M10-02",
+      "kind": "spec",
+      "title": "Diff protocol and patch model",
+      "file": "docs/specs/M10-02-diff-model.md",
+      "lane": "review",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M10-02.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M11-01",
+      "kind": "spec",
+      "title": "Multiple projects and location routing",
+      "file": "docs/specs/M11-01-projects.md",
+      "lane": "workspace",
+      "wave": 1,
+      "size": "L",
+      "deps": [
+        "T0",
+        "E0"
+      ],
+      "e2e": "tests/M11-01.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M12-02",
+      "kind": "spec",
+      "title": "Scheduled prompts",
+      "file": "docs/specs/M12-02-schedules.md",
+      "lane": "automation",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M12-02.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M12-03",
+      "kind": "spec",
+      "title": "OS notifications",
+      "file": "docs/specs/M12-03-notifications.md",
+      "lane": "automation",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M12-03.rs @ RUST_HARNESS_NOTIFY_SINK",
+      "status": "ready"
+    },
+    {
+      "id": "M13-01",
+      "kind": "spec",
+      "title": "MCP servers",
+      "file": "docs/specs/M13-01-mcp.md",
+      "lane": "integrations",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M13-01.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M13-02",
+      "kind": "spec",
+      "title": "Providers and integration auth",
+      "file": "docs/specs/M13-02-providers.md",
+      "lane": "integrations",
+      "wave": 1,
+      "size": "L",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M13-02.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M13-03",
+      "kind": "spec",
+      "title": "Saved permission rules",
+      "file": "docs/specs/M13-03-saved-permissions.md",
+      "lane": "integrations",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M13-03.rs @ RUST_HARNESS_MOCK_PERMISSION_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M13-04",
+      "kind": "spec",
+      "title": "Plugin status",
+      "file": "docs/specs/M13-04-plugins.md",
+      "lane": "integrations",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M13-04.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M14-01",
+      "kind": "spec",
+      "title": "PTY transport spike and client",
+      "file": "docs/specs/M14-01-pty-transport.md",
+      "lane": "terminal",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M14-01.rs (no model gate)",
+      "status": "ready"
+    },
+    {
+      "id": "M15-01",
+      "kind": "spec",
+      "title": "Preview panel and element picker",
+      "file": "docs/specs/M15-01-preview.md",
+      "lane": "preview",
+      "wave": 1,
+      "size": "L",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "manual checklist (macOS webview)",
+      "status": "ready"
+    },
+    {
+      "id": "M16-01",
+      "kind": "spec",
+      "title": "Linux packaging",
+      "file": "docs/specs/M16-01-linux-packaging.md",
+      "lane": "distribution",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "E0"
+      ],
+      "e2e": "scripts/e2e-linux.sh @ RUST_HARNESS_PACKAGING_E2E",
+      "status": "ready"
+    },
+    {
+      "id": "M16-02",
+      "kind": "spec",
+      "title": "Signed update check",
+      "file": "docs/specs/M16-02-updates.md",
+      "lane": "distribution",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "E0"
+      ],
+      "e2e": "tests/M16-02.rs (local manifest server)",
+      "status": "ready"
+    },
+    {
+      "id": "M16-03",
+      "kind": "spec",
+      "title": "Session export, import, and stats",
+      "file": "docs/specs/M16-03-session-transfer.md",
+      "lane": "distribution",
+      "wave": 1,
+      "size": "M",
+      "deps": [
+        "T0"
+      ],
+      "e2e": "tests/M16-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "ready"
+    },
+    {
+      "id": "M16-04",
+      "kind": "spec",
+      "title": "Redacted diagnostics",
+      "file": "docs/specs/M16-04-diagnostics.md",
+      "lane": "distribution",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "E0"
+      ],
+      "e2e": "app/tests/diagnostics.rs (--diagnostics)",
+      "status": "ready"
+    },
+    {
+      "id": "M10-03",
+      "kind": "spec",
+      "title": "Virtualized diff view",
+      "file": "docs/specs/M10-03-diff-view.md",
+      "lane": "review",
+      "wave": 2,
+      "size": "M",
+      "deps": [
+        "M10-01",
+        "M10-02"
+      ],
+      "e2e": "GPUI view tests + M10-02 data path",
+      "status": "blocked"
+    },
+    {
+      "id": "M11-02",
+      "kind": "spec",
+      "title": "Worktrees",
+      "file": "docs/specs/M11-02-worktrees.md",
+      "lane": "workspace",
+      "wave": 2,
+      "size": "L",
+      "deps": [
+        "M11-01"
+      ],
+      "e2e": "tests/M11-02.rs (no model gate)",
+      "status": "blocked"
+    },
+    {
+      "id": "M12-01",
+      "kind": "spec",
+      "title": "Goals: keep working until verified",
+      "file": "docs/specs/M12-01-goals.md",
+      "lane": "automation",
+      "wave": 2,
+      "size": "L",
+      "deps": [
+        "M9-06",
+        "T0"
+      ],
+      "e2e": "tests/M12-01.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "blocked"
+    },
+    {
+      "id": "M14-03",
+      "kind": "spec",
+      "title": "Terminal dock",
+      "file": "docs/specs/M14-03-terminal-view.md",
+      "lane": "terminal",
+      "wave": 2,
+      "size": "L",
+      "deps": [
+        "M14-01",
+        "M14-02"
+      ],
+      "e2e": "tests/M14-03.rs @ RUST_HARNESS_PTY_E2E",
+      "status": "blocked"
+    },
+    {
+      "id": "M11-03",
+      "kind": "spec",
+      "title": "Multi-run and comparison",
+      "file": "docs/specs/M11-03-multi-run.md",
+      "lane": "workspace",
+      "wave": 3,
+      "size": "L",
+      "deps": [
+        "M11-02"
+      ],
+      "e2e": "tests/M11-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
+      "status": "blocked"
+    },
+    {
+      "id": "G0",
+      "kind": "gate",
+      "title": "Wave 0 gate",
+      "file": null,
+      "lane": "gate",
+      "wave": 0,
+      "size": "S",
+      "deps": [
+        "E0",
+        "T0",
+        "M14-02"
+      ],
+      "e2e": "full workspace + sidecar suite",
+      "status": "done"
+    },
+    {
+      "id": "G1",
+      "kind": "gate",
+      "title": "Wave 1 gate",
+      "file": null,
+      "lane": "gate",
+      "wave": 1,
+      "size": "S",
+      "deps": [
+        "M9-01",
+        "M9-02",
+        "M9-03",
+        "M9-04",
+        "M9-05",
+        "M9-06",
+        "M10-01",
+        "M10-02",
+        "M11-01",
+        "M12-02",
+        "M12-03",
+        "M13-01",
+        "M13-02",
+        "M13-03",
+        "M13-04",
+        "M14-01",
+        "M15-01",
+        "M16-01",
+        "M16-02",
+        "M16-03",
+        "M16-04"
+      ],
+      "e2e": "every gate touched by the wave",
+      "status": "blocked"
+    },
+    {
+      "id": "G2",
+      "kind": "gate",
+      "title": "Wave 2 gate",
+      "file": null,
+      "lane": "gate",
+      "wave": 2,
+      "size": "S",
+      "deps": [
+        "M10-03",
+        "M11-02",
+        "M12-01",
+        "M14-03"
+      ],
+      "e2e": "every gate touched by the wave",
+      "status": "blocked"
+    },
+    {
+      "id": "G3",
+      "kind": "gate",
+      "title": "Wave 3 gate",
+      "file": null,
+      "lane": "gate",
+      "wave": 3,
+      "size": "S",
+      "deps": [
+        "M11-03"
+      ],
+      "e2e": "every gate touched by the wave",
+      "status": "blocked"
+    }
+  ]
+}
