@@ -71,11 +71,17 @@ Last updated: 2026-11-10
   loop: the e2e creates a form with a required field, lists it, answers it and
   verifies it is settled.
 
+- 2026-11-10 — **M9-05 done** (e2e above) and **M9-03 data layer.** Revert wire
+  types, `RevertStore` (3 tests), `StageRevert`/`CommitRevert`/`ClearRevert`
+  and API; e2e stages at the second user message with `files: false`, commits
+  and verifies the transcript keeps only the first turn. The revert panel and
+  the message action remain.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- Next: M9-03 (revert), M9-04 (compaction), M9-06 (usage), integrations,
-  automation, PTY, distribution and projects.
+- M9-03: "Revert to here" action + staged panel; then M9-04, M9-06,
+  integrations, automation, PTY, distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

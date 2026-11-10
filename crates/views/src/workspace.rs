@@ -268,6 +268,9 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::RevertStaged { .. }
+            | EngineEvent::RevertCommitted { .. }
+            | EngineEvent::RevertCleared { .. } => {}
             EngineEvent::FormCreated { form } => {
                 let mut forms = self.forms.forms().to_vec();
                 forms.push(form);

@@ -46,6 +46,18 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// A revert was staged and is waiting for commit.
+    RevertStaged {
+        session_id: String,
+        revert: harness_protocol::SessionRevert,
+    },
+    /// A staged revert was committed.
+    RevertCommitted {
+        session_id: String,
+        message_id: String,
+    },
+    /// The staged revert was cleared.
+    RevertCleared { session_id: String },
     /// A form was created (tests and plugins).
     FormCreated { form: harness_protocol::FormInfo },
     /// A form was answered or dismissed.
@@ -387,6 +399,40 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::StageRevert {
+            session_id,
+            message_id,
+            files,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.stage_revert(&session_id, message_id, files) => match result {
+                Ok(revert) => event(EngineEvent::RevertStaged { session_id, revert }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not stage the revert: {message}"),
+                }),
+            },
+        },
+        EngineCommand::CommitRevert { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.commit_revert(&session_id) => match result {
+                Ok(()) => event(EngineEvent::RevertCommitted {
+                    session_id,
+                    message_id: String::new(),
+                }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not commit the revert: {message}"),
+                }),
+            },
+        },
+        EngineCommand::ClearRevert { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.clear_revert(&session_id) => match result {
+                Ok(()) => event(EngineEvent::RevertCleared { session_id }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not clear the revert: {message}"),
+                }),
+            },
+        },
         EngineCommand::CreateForm {
             session_id,
             title,

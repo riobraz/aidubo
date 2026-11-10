@@ -74,6 +74,20 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Stage a revert at a message.
+    StageRevert {
+        session_id: String,
+        message_id: String,
+        files: Option<bool>,
+    },
+    /// Commit the staged revert.
+    CommitRevert {
+        session_id: String,
+    },
+    /// Clear the staged revert.
+    ClearRevert {
+        session_id: String,
+    },
     /// Reload a session's pending forms.
     LoadForms {
         session_id: String,
@@ -265,6 +279,34 @@ impl Engine {
             session_id: id.into(),
             title: title.into(),
             fields,
+        })
+    }
+
+    /// Stage a revert at a message.
+    pub fn stage_revert(
+        &self,
+        id: impl Into<String>,
+        message_id: impl Into<String>,
+        files: Option<bool>,
+    ) -> bool {
+        self.send(EngineCommand::StageRevert {
+            session_id: id.into(),
+            message_id: message_id.into(),
+            files,
+        })
+    }
+
+    /// Commit the staged revert.
+    pub fn commit_revert(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::CommitRevert {
+            session_id: id.into(),
+        })
+    }
+
+    /// Clear the staged revert.
+    pub fn clear_revert(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::ClearRevert {
+            session_id: id.into(),
         })
     }
 
