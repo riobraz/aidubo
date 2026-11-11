@@ -1,7 +1,7 @@
 //! The M1 workspace: project-scoped sessions.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, Theme as KitTheme, ThemeMode, TitleBar,
@@ -12,7 +12,8 @@ use gpui_kit::component::{
 use gpui_kit::*;
 use harness_core::{
     AuthFlow, Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry,
-    FormStore, InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
+    FormStore, InboxStore, McpStore, Notification, NotifyContext, NotifyInput, NotifyKind,
+    NotifyPolicy, NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
     PickerKind, PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
     SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus, TranscriptStore,
     UsageStore, VcsStore, describe_when, failure_reason, flatten, next_run_label, now_ms,
@@ -25,6 +26,8 @@ use harness_protocol::{
     ScheduleWhen, Session, SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
+
+use crate::notify::NotifyChannels;
 
 /// Server-backed lists the composer pickers filter locally.
 #[derive(Debug, Default)]
@@ -49,6 +52,26 @@ impl ProviderDialog {
             integration_id,
             integration_name,
             method: None,
+        }
+    }
+}
+
+/// Owned snapshot of where an event happened, so the policy can be borrowed
+/// mutably while its context still points at stable local strings.
+struct NotifyTarget {
+    session_id: String,
+    session_title: String,
+    focused: bool,
+    active_session: bool,
+}
+
+impl NotifyTarget {
+    fn context(&self) -> NotifyContext<'_> {
+        NotifyContext {
+            session_id: &self.session_id,
+            session_title: &self.session_title,
+            focused: self.focused,
+            active_session: self.active_session,
         }
     }
 }
@@ -181,6 +204,15 @@ pub struct WorkspaceView {
     selected_file: Option<usize>,
     diff_scroll: ScrollHandle,
     vcs_request: u64,
+    notify: NotifyPolicy,
+    notify_channels: NotifyChannels,
+    /// Whether the window had OS focus when the current event arrived.
+    notify_focused: bool,
+    /// The OS refused permission; the switch stays off until the user turns it
+    /// back on.
+    notify_denied: bool,
+    _notify_status_task: Task<()>,
+    _notify_flush_task: Task<()>,
     _events_task: Task<()>,
 }
 
@@ -189,15 +221,60 @@ impl WorkspaceView {
         window: &mut Window,
         engine: Engine,
         project_dir: PathBuf,
+        notify_settings: NotifySettings,
+        notify_channels: NotifyChannels,
         cx: &mut Context<Self>,
     ) -> Self {
+        let notify = NotifyPolicy::new(notify_settings);
         let events = engine.events();
-        let events_task = cx.spawn(async move |this, cx| {
+        let events_task = cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = events.recv().await {
+                // Focus is only needed for events the notification policy maps;
+                // streaming deltas must not pay for a window lookup.
+                let relevant = matches!(
+                    &event,
+                    EngineEvent::Stream(
+                        StreamEvent::ExecutionFinished { .. }
+                            | StreamEvent::PermissionAsked { .. }
+                            | StreamEvent::FormCreated { .. }
+                    ) | EngineEvent::FormCreated { .. }
+                );
+                let focused = relevant
+                    && cx
+                        .update(|window, _| window.is_window_active())
+                        .unwrap_or(false);
                 let updated = this.update(cx, |this, cx| {
+                    this.notify_focused = focused;
                     this.apply(event);
                     cx.notify();
                 });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Throttled notifications wait for their window to close.
+        let flush_task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let updated = this.update(cx, |this, _| {
+                    for notification in this.notify.flush(Instant::now()) {
+                        this.deliver(notification);
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let status = notify_channels.status.clone();
+        let status_task = cx.spawn(async move |this, cx| {
+            while status.recv().await.is_ok() {
+                let updated = this.update(cx, |this, cx| this.on_notify_denied(cx));
                 if updated.is_err() {
                     break;
                 }
@@ -315,11 +392,18 @@ impl WorkspaceView {
             selected_file: None,
             diff_scroll: ScrollHandle::new(),
             vcs_request: 0,
+            notify,
+            notify_channels,
+            notify_focused: false,
+            notify_denied: false,
+            _notify_status_task: status_task,
+            _notify_flush_task: flush_task,
             _events_task: events_task,
         }
     }
 
     fn apply(&mut self, event: EngineEvent) {
+        self.notify_from_event(&event);
         match event {
             EngineEvent::Starting { port } => {
                 self.status = EngineStatus::Starting { port: Some(port) };
@@ -496,9 +580,7 @@ impl WorkspaceView {
             }
             EngineEvent::RevertCleared { .. } => self.revert.clear(),
             EngineEvent::FormCreated { form } => {
-                let mut forms = self.forms.forms().to_vec();
-                forms.push(form);
-                self.forms.replace(forms);
+                self.forms.upsert(form);
             }
             EngineEvent::FormsLoaded { forms, .. } => {
                 self.forms.replace(forms);
@@ -649,6 +731,7 @@ impl WorkspaceView {
                         self.permission_in_flight = None;
                     }
                 }
+                StreamEvent::FormCreated { form } => self.forms.upsert(form),
                 event => {
                     let finished = matches!(event, StreamEvent::ExecutionFinished { .. });
                     if self.transcript.apply_stream(event) && finished {
@@ -730,6 +813,115 @@ impl WorkspaceView {
                 self.engine.refresh_sessions();
             }
         }
+    }
+
+    /// Feed an event to the notification policy. Runs before the event is
+    /// consumed, so the payload is still borrowable.
+    fn notify_from_event(&mut self, event: &EngineEvent) {
+        let now = Instant::now();
+        match event {
+            EngineEvent::Stream(stream) => {
+                let session_id = stream.session_id();
+                if session_id.is_empty() {
+                    return;
+                }
+                let target = self.notify_target(session_id);
+                if let Some(notification) =
+                    self.notify.on_stream_event(stream, target.context(), now)
+                {
+                    self.deliver(notification);
+                }
+            }
+            EngineEvent::FormCreated { form } => {
+                let target = self.notify_target(&form.session_id);
+                let notification = self.notify.on_event(
+                    NotifyInput {
+                        kind: NotifyKind::QuestionAsked,
+                        event_key: &form.id,
+                        preview: Some(form.title.as_str()).filter(|title| !title.is_empty()),
+                        context: target.context(),
+                    },
+                    now,
+                );
+                if let Some(notification) = notification {
+                    self.deliver(notification);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn notify_target(&self, session_id: &str) -> NotifyTarget {
+        let session_title = self
+            .sessions
+            .sessions()
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| session.title.clone())
+            .unwrap_or_default();
+        NotifyTarget {
+            session_id: session_id.to_string(),
+            session_title,
+            focused: self.notify_focused,
+            active_session: self.sessions.selected_id() == Some(session_id),
+        }
+    }
+
+    fn deliver(&mut self, notification: Notification) {
+        match self.notify_channels.notifications.try_send(notification) {
+            Ok(()) => {}
+            Err(_) => {
+                // The app stopped draining at shutdown; delivery is best effort.
+            }
+        }
+    }
+
+    fn on_notify_denied(&mut self, cx: &mut Context<Self>) {
+        if self.notify_denied {
+            return;
+        }
+        self.notify_denied = true;
+        let mut settings = self.notify.settings().clone();
+        settings.enabled = false;
+        self.notify.set_settings(settings.clone());
+        self.persist_notify_settings(settings);
+        cx.notify();
+    }
+
+    fn persist_notify_settings(&self, settings: NotifySettings) {
+        match self.notify_channels.settings.try_send(settings) {
+            Ok(()) => {}
+            Err(_) => {
+                // The app is shutting down; the next launch keeps the old file.
+            }
+        }
+    }
+
+    fn set_notify_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let mut settings = self.notify.settings().clone();
+        settings.enabled = enabled;
+        if enabled {
+            self.notify_denied = false;
+        }
+        self.update_notify_settings(settings, cx);
+    }
+
+    fn set_notify_kind(&mut self, kind: NotifyKind, on: bool, cx: &mut Context<Self>) {
+        let mut settings = self.notify.settings().clone();
+        settings.set(kind, on);
+        self.update_notify_settings(settings, cx);
+    }
+
+    fn set_notify_preview(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mut settings = self.notify.settings().clone();
+        settings.include_preview = on;
+        self.update_notify_settings(settings, cx);
+    }
+
+    fn update_notify_settings(&mut self, settings: NotifySettings, cx: &mut Context<Self>) {
+        self.notify.set_settings(settings.clone());
+        self.persist_notify_settings(settings);
+        cx.notify();
     }
 
     /// Point the transcript at the selected session and reload it.
@@ -2697,6 +2889,8 @@ impl WorkspaceView {
             panel = panel.child(section);
         }
 
+        panel = panel.child(self.render_notify_settings(&theme, cx));
+
         let offset: f32 = self.diff_scroll.offset().y.into();
         let row_height = 18.0;
         let top = if offset < 0.0 {
@@ -2756,6 +2950,107 @@ impl WorkspaceView {
             body = body.child(element);
         }
         panel.child(body)
+    }
+
+    fn render_notify_settings(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = self.notify.settings();
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .justify_between()
+                    .child(div().text_sm().child("Notifications"))
+                    .child(
+                        div()
+                            .id("notify-enabled")
+                            .text_xs()
+                            .text_color(if settings.enabled {
+                                theme.success
+                            } else {
+                                theme.muted
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let enabled = !this.notify.settings().enabled;
+                                this.set_notify_enabled(enabled, cx);
+                            }))
+                            .child(if settings.enabled { "On" } else { "Off" }),
+                    ),
+            );
+
+        if self.notify_denied {
+            section = section.child(
+                div()
+                    .px_3()
+                    .pb_2()
+                    .text_xs()
+                    .text_color(theme.warning)
+                    .child(
+                        "Notifications are blocked by the system. \
+                         Enable Rust Harness in System Settings.",
+                    ),
+            );
+        }
+
+        for kind in NotifyKind::ALL {
+            let on = settings.is_on(kind);
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .justify_between()
+                    .text_xs()
+                    .child(kind.label())
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("notify-kind-{}", kind.as_str())))
+                            .text_color(if on { theme.accent } else { theme.muted })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_notify_kind(kind, !on, cx);
+                            }))
+                            .child(if on { "On" } else { "Off" }),
+                    ),
+            );
+        }
+
+        let preview = settings.include_preview;
+        section = section.child(
+            div()
+                .px_3()
+                .py_1()
+                .flex()
+                .justify_between()
+                .text_xs()
+                .child("Include message preview")
+                .child(
+                    div()
+                        .id("notify-preview")
+                        .text_color(if preview { theme.accent } else { theme.muted })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_notify_preview(!preview, cx);
+                        }))
+                        .child(if preview { "On" } else { "Off" }),
+                ),
+        );
+
+        if !settings.enabled {
+            section = section.child(
+                div()
+                    .px_3()
+                    .pb_2()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child("Notifications are off."),
+            );
+        }
+
+        section
     }
 
     /// Window title content: the app and project on the left, engine status on
@@ -4059,7 +4354,7 @@ mod tests {
     use gpui_kit::component::input::InputEvent;
     use gpui_kit::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
     use harness_core::{DraftSend, PickerItem, PickerKind, PickerState};
-    use harness_engine::{Engine, EngineConfig};
+    use harness_engine::{Engine, EngineConfig, EngineEvent, StreamEvent};
 
     use super::WorkspaceView;
 
@@ -4082,7 +4377,14 @@ mod tests {
         let engine =
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
         let (view, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
 
         view.update(cx, |view, _| {
@@ -4111,7 +4413,14 @@ mod tests {
         let engine =
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
         let (view, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
 
         view.update(cx, |view, _| {
@@ -4158,7 +4467,14 @@ mod tests {
         let engine =
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
         let (view, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
 
         view.update(cx, |view, _| {
@@ -4181,7 +4497,14 @@ mod tests {
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
 
         let (_, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -4213,7 +4536,14 @@ mod tests {
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
 
         let (view, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
 
         cx.update(|window, cx| {
@@ -4263,7 +4593,14 @@ mod tests {
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
 
         let (view, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
 
         cx.update(|window, cx| {
@@ -4321,7 +4658,14 @@ mod tests {
             Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
 
         let (view, cx) = cx.add_window_view(|window, cx| {
-            WorkspaceView::new(window, engine, project_dir.clone(), cx)
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                crate::notify::NotifyChannels::disabled(),
+                cx,
+            )
         });
 
         let items = [
@@ -4364,6 +4708,152 @@ mod tests {
 
                 assert!(view.picker_key("escape", window, cx));
                 assert!(view.picker.is_none());
+            });
+        });
+    }
+
+    fn notify_session(id: &str, title: &str) -> harness_protocol::Session {
+        harness_protocol::Session {
+            id: id.into(),
+            title: Some(title.into()),
+            project_id: None,
+            agent: None,
+            model: None,
+            time: harness_protocol::SessionTime {
+                created: 10,
+                updated: 10,
+            },
+            location: None,
+            tokens: None,
+            cost: None,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn unfocused_turn_done_is_delivered(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-notify-delivery-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let (notifications_sender, notifications) = async_channel::unbounded();
+        let (settings_sender, _settings_receiver) = async_channel::unbounded();
+        let (_status_sender, status) = async_channel::unbounded();
+        let channels = crate::notify::NotifyChannels {
+            notifications: notifications_sender,
+            settings: settings_sender,
+            status,
+        };
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                channels,
+                cx,
+            )
+        });
+
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                view.sessions
+                    .replace(vec![notify_session("ses_1", "Fix the build")]);
+                view.sessions.select("ses_1");
+                view.notify_focused = false;
+                view.apply(EngineEvent::Stream(StreamEvent::ExecutionFinished {
+                    session_id: "ses_1".into(),
+                    event_id: "evt_1".into(),
+                    outcome: harness_protocol::ExecutionOutcome::Succeeded,
+                }));
+
+                let notification = notifications.try_recv().expect("notification");
+                assert_eq!(notification.kind, harness_core::NotifyKind::TurnDone);
+                assert_eq!(notification.session_title, "Fix the build");
+                assert_eq!(notification.body, "Turn finished");
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn focused_active_session_is_not_notified(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-notify-focus-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let (notifications_sender, notifications) = async_channel::unbounded();
+        let (settings_sender, _settings_receiver) = async_channel::unbounded();
+        let (_status_sender, status) = async_channel::unbounded();
+        let channels = crate::notify::NotifyChannels {
+            notifications: notifications_sender,
+            settings: settings_sender,
+            status,
+        };
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                channels,
+                cx,
+            )
+        });
+
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                view.sessions
+                    .replace(vec![notify_session("ses_1", "Fix the build")]);
+                view.sessions.select("ses_1");
+                view.notify_focused = true;
+                view.apply(EngineEvent::Stream(StreamEvent::ExecutionFinished {
+                    session_id: "ses_1".into(),
+                    event_id: "evt_1".into(),
+                    outcome: harness_protocol::ExecutionOutcome::Succeeded,
+                }));
+                assert!(notifications.try_recv().is_err());
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn denied_permission_disables_and_persists(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+
+        let project_dir = PathBuf::from("/tmp/rust-harness-notify-denied-test");
+        let engine =
+            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let (notifications_sender, _notifications) = async_channel::unbounded();
+        let (settings_sender, settings) = async_channel::unbounded();
+        let (_status_sender, status) = async_channel::unbounded();
+        let channels = crate::notify::NotifyChannels {
+            notifications: notifications_sender,
+            settings: settings_sender,
+            status,
+        };
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            WorkspaceView::new(
+                window,
+                engine,
+                project_dir.clone(),
+                harness_core::NotifySettings::default(),
+                channels,
+                cx,
+            )
+        });
+
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.on_notify_denied(cx);
+                assert!(view.notify_denied);
+                assert!(!view.notify.settings().enabled);
+                let persisted = settings.try_recv().expect("settings written");
+                assert!(!persisted.enabled);
+
+                // A second denial must not write another setting.
+                view.on_notify_denied(cx);
+                assert!(settings.try_recv().is_err());
             });
         });
     }

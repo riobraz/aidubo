@@ -3215,6 +3215,7 @@ name = "harness-core"
 version = "0.1.0"
 dependencies = [
  "harness-protocol",
+ "serde",
  "serde_json",
 ]
 
@@ -3225,6 +3226,7 @@ dependencies = [
  "async-channel",
  "directories",
  "futures-util",
+ "harness-core",
  "harness-protocol",
  "rand 0.9.5",
  "reqwest",
@@ -3259,6 +3261,7 @@ dependencies = [
 name = "harness-views"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gpui-kit",
  "harness-core",
  "harness-engine",
@@ -6154,9 +6157,12 @@ dependencies = [
 name = "rust-harness"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gpui-kit",
+ "harness-core",
  "harness-engine",
  "harness-views",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

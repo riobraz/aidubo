@@ -8,7 +8,10 @@ use std::time::Duration;
 use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
 use harness_engine::{Engine, EngineConfig};
-use harness_views::{CancelOverlays, FocusComposer, NewSession, ToggleTheme, WorkspaceView};
+use harness_views::{
+    CancelOverlays, FocusComposer, NewSession, NotifyChannels, ToggleTheme, WorkspaceView,
+};
+use rust_harness::notify;
 
 fn main() {
     if std::env::args().any(|arg| arg == "--diagnostics") {
@@ -25,6 +28,23 @@ fn main() {
             "project directory does not exist; the engine will report an error"
         );
     }
+
+    let notify_settings = notify::load_settings();
+    let notifier = notify::from_env();
+    let (notifications_sender, notifications_receiver) = async_channel::unbounded();
+    let (settings_sender, settings_receiver) = async_channel::unbounded();
+    let (status_sender, status_receiver) = async_channel::unbounded();
+    notify::spawn_delivery(
+        notifier,
+        notifications_receiver,
+        settings_receiver,
+        status_sender,
+    );
+    let notify_channels = NotifyChannels {
+        notifications: notifications_sender,
+        settings: settings_sender,
+        status: status_receiver,
+    };
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
@@ -50,7 +70,16 @@ fn main() {
                 KeyBinding::new("ctrl-shift-l", ToggleTheme, Some("Workspace")),
                 KeyBinding::new("escape", CancelOverlays, Some("Workspace")),
             ]);
-            cx.new(|cx| WorkspaceView::new(window, engine, project_dir, cx))
+            cx.new(|cx| {
+                WorkspaceView::new(
+                    window,
+                    engine,
+                    project_dir,
+                    notify_settings,
+                    notify_channels,
+                    cx,
+                )
+            })
         });
 
         if let Err(error) = opened {

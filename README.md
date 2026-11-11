@@ -52,6 +52,16 @@ the input open searchable pickers and persist the choice for the session. A
 picker that fails or finds nothing leaves the typed text untouched.
 
 Not implemented yet: collapsible tool output, Linux packaging, and auto-update.
+
+**Notifications.** When a turn finishes or fails, a permission is requested, or
+the agent asks a question while the window is not focused on that session, the
+OS shows a notification. The body carries no message text by default; previews
+are opt-in and truncated. The right panel has a global switch, per-kind
+switches, and the preview switch. macOS delivery uses `osascript` with the
+title and body passed as argv; a denial turns the feature off and shows an
+inline notice. Settings live in
+`~/Library/Application Support/Rust Harness/notifications.json`.
+
 The post-M7 sequence — rich composer, conversation control, git review,
 projects/worktrees/multi-run, automation, integrations, terminal, preview — is
 in [`docs/ROADMAP.md`](docs/ROADMAP.md), with executable per-feature specs, a
@@ -134,7 +144,8 @@ integration tests in `crates/engine/tests/sidecar.rs` launch a real
 `RUST_HARNESS_SKIP_E2E=1`), and the streaming test runs only when
 `RUST_HARNESS_MOCK_PROVIDER` points at an OpenAI-compatible mock endpoint. The
 attachment test uses the same mock and also checks that file/agent attachments
-and a model/agent switch reach the server.
+and a model/agent switch reach the server. The notification test runs when
+`RUST_HARNESS_NOTIFY_SINK` names a file and asserts one sink line per turn.
 
 ## Configuration
 
@@ -143,6 +154,8 @@ and a model/agent switch reach the server.
 | `RUST_HARNESS_PROJECT` | Project directory (alternative to the positional argument) |
 | `RUST_HARNESS_OPENCODE_BIN` | Explicit path to the `opencode` binary |
 | `RUST_HARNESS_AUTOQUIT_MS` | Exit after N milliseconds; used for smoke tests |
+| `RUST_HARNESS_NOTIFY_SINK` | Append notifications as JSON lines to this file instead of the OS |
+| `RUST_HARNESS_NOTIFY_SETTINGS` | Override the notification settings file path |
 | `RUST_LOG` | Tracing filter (default: `info,harness_engine=debug`) |
 
 The sidecar is launched on `127.0.0.1` with a random port and a random

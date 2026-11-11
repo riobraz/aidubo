@@ -24,6 +24,16 @@ impl FormStore {
         &self.forms
     }
 
+    /// Insert a form, replacing any pending form with the same id. The live
+    /// stream and a command reply can both announce the same form.
+    pub fn upsert(&mut self, form: FormInfo) {
+        match self.forms.iter_mut().find(|pending| pending.id == form.id) {
+            Some(pending) => *pending = form,
+            None => self.forms.push(form),
+        }
+        self.error = None;
+    }
+
     pub fn front(&self) -> Option<&FormInfo> {
         self.forms.first()
     }
@@ -160,5 +170,17 @@ mod tests {
         store.remove("f1");
         assert!(store.forms().is_empty());
         assert!(store.answer("f1").is_none());
+    }
+
+    #[test]
+    fn form_upsert_replaces_by_id() {
+        let mut store = FormStore::default();
+        store.upsert(form("f1", Vec::new()));
+        let mut updated = form("f1", vec![field("name", "string", true)]);
+        updated.title = "Renamed".into();
+        store.upsert(updated);
+        store.upsert(form("f2", Vec::new()));
+        assert_eq!(store.forms().len(), 2);
+        assert_eq!(store.forms()[0].title, "Renamed");
     }
 }

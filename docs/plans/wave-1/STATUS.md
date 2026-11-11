@@ -6,6 +6,23 @@ Last updated: 2026-11-11
 
 ## Completed
 
+- 2026-11-11 — **M12-03 done.** `StreamEvent::ExecutionFinished` carries the
+  server's SSE `id` (fallback `created:{created}`) so replay dedupe is stable;
+  live `form.created` frames parse to `StreamEvent::FormCreated` and upsert
+  into `FormStore` by id. `NotifyPolicy` (200-id dedupe, 2 s per-session
+  throttle with replacement, focus suppression, preview opt-in truncated at
+  120 chars) maps turn-done/failed, permission and form events. The workspace
+  feeds it every engine event, sends notifications over an `async_channel`,
+  flushes throttled ones every 250 ms, and disables plus persists settings on
+  a denial status. The app owns `MacNotifier` (constant AppleScript, title and
+  body as argv), `FileNotifier` (`RUST_HARNESS_NOTIFY_SINK`), Linux
+  `notify-send`, settings load/save (macOS Application Support or
+  `RUST_HARNESS_NOTIFY_SETTINGS`), and two delivery threads. A Notifications
+  section in the right panel has the global, four kind and preview toggles.
+  Tests: 5 core policy, 3 GPUI wiring (delivered, focus suppression, denial),
+  2 app backends; e2e writes exactly one JSON `turn_done` line and drops a
+  replayed frame.
+
 - 2026-11-11 — **M12-02 done.** Typed `ScheduleWhen`/`ScheduleStatus`/
   `ScheduleOutcome` with unknown-value fallbacks; `ScheduleStore` ordered by
   `nextDueAt` then creation, with upsert, finished-row filtering, local
@@ -26,6 +43,15 @@ Last updated: 2026-11-11
   `SessionApi::vcs_diff` / `session_diff`; e2e against a real git repository.
 
 ## Discovered
+
+- OpenCode v2.2.7 puts a stable top-level `id` (`evt_…`) on
+  `session.execution.*` SSE frames and emits `form.created` over SSE; the
+  engine reads both. The id is the reconnect-safe notification key; frames
+  without it fall back to `created:{created}`.
+- `NotifyPolicy` lives in the view because it needs live focus and settings;
+  the app owns the backends and persistence. The e2e simulates a reconnect by
+  re-feeding the same `ExecutionFinished` frame, because no public hook forces
+  a real SSE reconnect.
 
 - OpenCode v2.2.6 builds its working-tree snapshot from a file watcher. Before
   the first filesystem event after startup, `/api/vcs/status` and
@@ -159,17 +185,37 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M13-02 is complete, including the security review. Next: M12-03, M14-01,
-  M16-01…03, M11-01, M15-01.
+- M12-03 is complete. Next: M14-01, M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
 
-None technical. Remaining work is volume: 18 of 21 nodes.
+None technical. Remaining work is volume: 17 of 21 nodes.
 
 ## Verification
 
-Per node. M13-02:
+Per node. M12-03:
+
+```sh
+cargo test -p harness-core --lib                94 passed
+cargo test -p harness-views                     10 passed
+cargo test -p rust-harness                      2 + 7 passed
+RUST_HARNESS_NOTIFY_SINK=/tmp/... cargo test -p harness-engine --test M12-03
+                                                1 passed
+cargo test --workspace                          229 passed
+cargo clippy --workspace --all-targets -- -D warnings   clean
+cargo fmt --all -- --check                       clean
+```
+
+The e2e sink held exactly one line:
+`{"kind":"turn_done","session_title":"Notification test","body":"Turn finished"}`.
+A smoke run (`RUST_HARNESS_AUTOQUIT_MS=2500`) booted the window, connected the
+stream, and exited cleanly with no sidecar listener left behind. The visual
+macOS banner was not exercised automatically (it would pop a notification on
+the user's desktop); the osascript argv injection contract is unit-tested and
+the sink path is verified end to end.
+
+M13-02:
 
 ```sh
 cargo test -p harness-protocol                   51 passed

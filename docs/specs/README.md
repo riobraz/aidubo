@@ -209,7 +209,7 @@ Update this table when a node closes.
 | M11-03 multi-run | 3 | blocked (M11-02) |
 | M12-01 goals | 2 | blocked (M9-06) |
 | M12-02 schedules | 1 | done |
-| M12-03 notifications | 1 | ready |
+| M12-03 notifications | 1 | done |
 | M13-01 mcp | 1 | ready |
 | M13-02 providers | 1 | done |
 | M13-03 saved-permissions | 1 | done |

@@ -660,6 +660,9 @@ pub enum StreamEvent {
     },
     ExecutionFinished {
         session_id: String,
+        /// The server's event id. Reconnect replay repeats it, so consumers can
+        /// dedupe one-off effects such as notifications.
+        event_id: String,
         outcome: ExecutionOutcome,
     },
     /// The agent started an assistant message, before any text arrives.
@@ -760,6 +763,10 @@ pub enum StreamEvent {
         error: StructuredError,
         content: Vec<ToolContent>,
     },
+    /// The agent is waiting on a form answer.
+    FormCreated {
+        form: FormInfo,
+    },
     /// The turn is blocked until the user answers this request.
     PermissionAsked {
         request: PermissionRequest,
@@ -814,6 +821,7 @@ impl StreamEvent {
             | Self::ToolFailed { session_id, .. }
             | Self::PermissionReplied { session_id, .. } => session_id,
             Self::PermissionAsked { request } => &request.session_id,
+            Self::FormCreated { form } => &form.session_id,
             Self::CompactionStarted { session_id }
             | Self::CompactionEnded { session_id }
             | Self::CompactionFailed { session_id, .. } => session_id,

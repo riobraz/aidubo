@@ -6,13 +6,15 @@
 //! break rendering.
 
 use harness_protocol::{
-    ExecutionOutcome, ModelRef, PermissionReply, PermissionRequest, StreamEvent, StructuredError,
-    ToolContent,
+    ExecutionOutcome, FormInfo, ModelRef, PermissionReply, PermissionRequest, StreamEvent,
+    StructuredError, ToolContent,
 };
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct WireEvent {
+    #[serde(default)]
+    id: String,
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
@@ -70,6 +72,11 @@ struct StepStartedData {
     agent: Option<String>,
     #[serde(default)]
     model: Option<ModelRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FormCreatedData {
+    form: FormInfo,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,6 +231,11 @@ fn input_text(value: serde_json::Value) -> String {
 pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
     let event: WireEvent = serde_json::from_str(json).ok()?;
     let created = event.created;
+    let event_id = if event.id.is_empty() {
+        format!("created:{created}")
+    } else {
+        event.id.clone()
+    };
     let data = event.data;
 
     Some(match event.kind.as_str() {
@@ -237,6 +249,7 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
             let data: SessionData = serde_json::from_value(data).ok()?;
             StreamEvent::ExecutionFinished {
                 session_id: data.session_id,
+                event_id,
                 outcome: ExecutionOutcome::Succeeded,
             }
         }
@@ -249,6 +262,7 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
                 .unwrap_or_else(|| "The agent turn failed.".to_string());
             StreamEvent::ExecutionFinished {
                 session_id: data.session_id,
+                event_id,
                 outcome: ExecutionOutcome::Failed { message },
             }
         }
@@ -257,8 +271,13 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
             let _ = data.reason;
             StreamEvent::ExecutionFinished {
                 session_id: data.session_id,
+                event_id,
                 outcome: ExecutionOutcome::Interrupted,
             }
+        }
+        "form.created" => {
+            let data: FormCreatedData = serde_json::from_value(data).ok()?;
+            StreamEvent::FormCreated { form: data.form }
         }
         "session.compaction.started" => {
             let data: SessionData = serde_json::from_value(data).ok()?;
@@ -471,25 +490,67 @@ mod tests {
             })
         );
 
-        let failed = r#"{"type":"session.execution.failed","data":{"sessionID":"ses_1",
+        let failed = r#"{"id":"evt_fail","created":9,"type":"session.execution.failed",
+            "data":{"sessionID":"ses_1",
             "error":{"type":"provider.quota","message":"No credits","status":402}}}"#;
         assert_eq!(
             parse_event(failed),
             Some(StreamEvent::ExecutionFinished {
                 session_id: "ses_1".into(),
+                event_id: "evt_fail".into(),
                 outcome: ExecutionOutcome::Failed {
                     message: "No credits".into()
                 },
             })
         );
 
-        let interrupted = r#"{"type":"session.execution.interrupted",
+        let interrupted = r#"{"id":"evt_int","type":"session.execution.interrupted",
             "data":{"sessionID":"ses_1","reason":"user"}}"#;
         assert_eq!(
             parse_event(interrupted),
             Some(StreamEvent::ExecutionFinished {
                 session_id: "ses_1".into(),
+                event_id: "evt_int".into(),
                 outcome: ExecutionOutcome::Interrupted,
+            })
+        );
+
+        // Older frames without an id still yield a replay-stable fallback.
+        let succeeded = r#"{"created":12,"type":"session.execution.succeeded",
+            "data":{"sessionID":"ses_1"}}"#;
+        assert_eq!(
+            parse_event(succeeded),
+            Some(StreamEvent::ExecutionFinished {
+                session_id: "ses_1".into(),
+                event_id: "created:12".into(),
+                outcome: ExecutionOutcome::Succeeded,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_form_created() {
+        let json = r#"{"id":"evt_form","type":"form.created","data":{"form":{
+            "id":"form_1","sessionID":"ses_1","title":"Pick one",
+            "fields":[{"key":"choice","type":"string"}]}}}"#;
+        assert_eq!(
+            parse_event(json),
+            Some(StreamEvent::FormCreated {
+                form: FormInfo {
+                    id: "form_1".into(),
+                    session_id: "ses_1".into(),
+                    title: "Pick one".into(),
+                    fields: vec![harness_protocol::FormField {
+                        key: "choice".into(),
+                        kind: "string".into(),
+                        title: None,
+                        description: None,
+                        required: false,
+                        hidden: false,
+                        options: Vec::new(),
+                        default: None,
+                    }],
+                },
             })
         );
     }

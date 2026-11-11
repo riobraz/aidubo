@@ -426,6 +426,7 @@ impl TranscriptStore {
             // tracks them in a PermissionQueue.
             StreamEvent::PermissionAsked { .. }
             | StreamEvent::PermissionReplied { .. }
+            | StreamEvent::FormCreated { .. }
             | StreamEvent::FilesystemChanged
             | StreamEvent::UsageUpdated { .. }
             | StreamEvent::CompactionStarted { .. }

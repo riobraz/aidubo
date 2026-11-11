@@ -196,7 +196,7 @@
         "T0"
       ],
       "e2e": "tests/M12-03.rs @ RUST_HARNESS_NOTIFY_SINK",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M13-01",
