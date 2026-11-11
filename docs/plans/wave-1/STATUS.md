@@ -284,17 +284,20 @@ Last updated: 2026-11-11
 
 - M13-01, M14-01, M16-01, M16-02, M16-03 and M11-01 are complete. M11-01
   landed in three commits: project list and selection, explicit per-command
-  directory with canonicalization rejection, and app-data persistence. M15-01
-  is next.
+  directory with canonicalization rejection, and app-data persistence.
+- M15-01 (preview) was cancelled before implementation: the pinned GPUI
+  surface has no hosted-native-view API, so a `WKWebView` cannot satisfy the
+  spec's resize, close, and teardown requirements without a fake browser. The
+  finding is in `docs/specs/M15-01-preview.md`; nothing depends on it.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge. The Linux
   packaging smoke test needs a `ubuntu-24.04` runner (`make
   test-packaging-linux`).
 
 ## Blockers
 
-None technical. Remaining work is volume: 18 of the 21 wave-1 spec nodes are
-done in the graph; M14-02/M14-03 and other later-wave nodes depend on this
-transport.
+None technical. 19 of the 21 wave-1 spec nodes are done and M15-01 is
+cancelled; only gate G1 remains. M14-02/M14-03 and other later-wave nodes
+depend on this transport.
 
 ## Verification
 

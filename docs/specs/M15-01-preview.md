@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | cancelled |
 | Wave | 1 |
 | Size | XL → split before starting |
 | Depends on | T0 |
@@ -61,13 +61,24 @@ E2E: none automated. The manual checklist in `STATUS.md` covers: load
 `localhost:5173`, resize, reload, pick an element, close, and confirm the
 process is gone (`ps`).
 
+## 4a. Finding (2026-11-11)
+
+Cancelled before the split was implemented. The pinned GPUI surface
+(`gpui-kit = "=0.9.0"`, `gpui-pre 0.3.11`) exposes a raw window handle and a
+private platform window, but no public API for hosting an `NSView` in the
+element tree, no layout bridge for a native child, and no destruction hook.
+Attaching a `WKWebView` to the content view directly would bypass GPUI layout,
+input, focus, and close handling, which is the fake browser this spec forbids.
+The node is therefore marked cancelled with this finding; nothing else is
+blocked. Revive as M15-01a/M15-01b if a supported host API appears.
+
 ## 5. Acceptance
 
 - [ ] `localhost:5173` renders and survives resize.
 - [ ] A remote URL is blocked without an explicit override.
 - [ ] Picking inserts a selector and snippet, not executable text.
 - [ ] Closing destroys the webview.
-- [ ] If the host integration fails, the node is marked cancelled with the
+- [x] If the host integration fails, the node is marked cancelled with the
       finding and nothing else is blocked.
 
 ## 6. Risks

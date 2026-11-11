@@ -279,8 +279,8 @@
       "deps": [
         "T0"
       ],
-      "e2e": "manual checklist (macOS webview)",
-      "status": "ready"
+      "e2e": "not built: GPUI 0.9.0 has no hosted-native-view API",
+      "status": "cancelled"
     },
     {
       "id": "M16-01",
