@@ -289,15 +289,16 @@ Last updated: 2026-11-11
   surface has no hosted-native-view API, so a `WKWebView` cannot satisfy the
   spec's resize, close, and teardown requirements without a fake browser. The
   finding is in `docs/specs/M15-01-preview.md`; nothing depends on it.
-- Gate G1 has not run; the branch `wave-1` is not ready to merge. The Linux
-  packaging smoke test needs a `ubuntu-24.04` runner (`make
-  test-packaging-linux`).
+- Gate G1 ran on 2026-11-11: formatting, clippy, the full workspace suite, the
+  sidecar e2e gate, and graph validation pass. The Linux packaging smoke test
+  cannot run on this macOS host; `release-linux.yml` runs it on `ubuntu-24.04`.
+  The branch `wave-1` is ready for review and merge on the macOS CI gate.
 
 ## Blockers
 
-None technical. 19 of the 21 wave-1 spec nodes are done and M15-01 is
-cancelled; only gate G1 remains. M14-02/M14-03 and other later-wave nodes
-depend on this transport.
+None technical. All 21 wave-1 spec nodes are done (20) or cancelled (M15-01),
+and gate G1 is closed. The only unrun check is the Linux-only packaging e2e,
+which is owned by `release-linux.yml`.
 
 ## Verification
 
@@ -430,3 +431,26 @@ field keys and no URL, so the dialog cannot show an external link; cancelling a
 non-existent attempt returns success, so the e2e accepts either terminal
 event. The integration list is large (hundreds of providers), so the view only
 reloads it after a real connection, not on every attempt update.
+
+G1 (wave gate, 2026-11-11):
+
+```sh
+cargo fmt --all && cargo fmt --all -- --check            clean
+cargo clippy --workspace --all-targets -- -D warnings     clean
+cargo test --workspace                                    ok (35 test binaries)
+cargo test -p harness-engine --test sidecar -- --nocapture  ok (6 passed)
+python3 scripts/spec-graph.py --validate                  ok: 33 nodes, 4 waves
+```
+
+Every wave e2e binary ran with a real opencode v2.2.7 and its internal mock
+providers: M9-01…06, M10-01, M10-02, M11-01, M12-02, M12-03, M13-01…04,
+M14-01, M16-02, M16-03, T0, and sidecar. The sidecar `--nocapture` run skips
+its externally supplied mock providers (`RUST_HARNESS_MOCK_PROVIDER`,
+`RUST_HARNESS_MOCK_TOOL_PROVIDER`, `RUST_HARNESS_MOCK_PERMISSION_PROVIDER`)
+because no external mock server is configured on this host; the internal mock
+equivalents in the other e2e binaries cover the same paths.
+
+The Linux packaging smoke test (`RUST_HARNESS_PACKAGING_E2E=1
+scripts/e2e-linux.sh`) was not run: it needs an `ubuntu-24.04` host with
+`appimagetool`, `dpkg-deb`, and `xvfb`. `release-linux.yml` runs it on that
+runner.

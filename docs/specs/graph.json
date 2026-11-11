@@ -365,7 +365,7 @@
         "M11-01"
       ],
       "e2e": "tests/M11-02.rs (no model gate)",
-      "status": "blocked"
+      "status": "ready"
     },
     {
       "id": "M12-01",
@@ -380,7 +380,7 @@
         "T0"
       ],
       "e2e": "tests/M12-01.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "blocked"
+      "status": "ready"
     },
     {
       "id": "M14-03",
@@ -395,7 +395,7 @@
         "M14-02"
       ],
       "e2e": "tests/M14-03.rs @ RUST_HARNESS_PTY_E2E",
-      "status": "blocked"
+      "status": "ready"
     },
     {
       "id": "M11-03",
@@ -459,7 +459,7 @@
         "M16-04"
       ],
       "e2e": "every gate touched by the wave",
-      "status": "blocked"
+      "status": "done"
     },
     {
       "id": "G2",

@@ -205,9 +205,9 @@ Update this table when a node closes.
 | M10-02 diff-model | 1 | done |
 | M10-03 diff-view | 2 | done |
 | M11-01 projects | 1 | done |
-| M11-02 worktrees | 2 | blocked (M11-01) |
+| M11-02 worktrees | 2 | ready |
 | M11-03 multi-run | 3 | blocked (M11-02) |
-| M12-01 goals | 2 | blocked (M9-06) |
+| M12-01 goals | 2 | ready |
 | M12-02 schedules | 1 | done |
 | M12-03 notifications | 1 | done |
 | M13-01 mcp | 1 | done |
@@ -215,12 +215,13 @@ Update this table when a node closes.
 | M13-03 saved-permissions | 1 | done |
 | M13-04 plugins | 1 | done |
 | M14-01 pty-transport | 1 | done |
-| M14-03 terminal-view | 2 | blocked (M14-01, M14-02) |
+| M14-03 terminal-view | 2 | ready |
 | M15-01 preview | 1 | cancelled |
 | M16-01 linux-packaging | 1 | done |
 | M16-02 updates | 1 | done |
 | M16-03 session-transfer | 1 | done |
 | M16-04 diagnostics | 1 | done |
+| G1 wave-1 gate | 1 | done |
 
 ## 8. What is deliberately not a node
 

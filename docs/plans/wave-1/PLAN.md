@@ -1,6 +1,6 @@
 # Plan — Wave 1 execution
 
-Status: in progress · 2026-11-10
+Status: done · 2026-11-11
 
 ## Goal
 
