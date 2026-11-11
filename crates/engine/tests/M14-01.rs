@@ -69,13 +69,16 @@ fn pty_streams_output_resizes_and_terminates() {
     let mut deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&started.events, deadline);
 
-    assert!(started.engine.create_pty(CreatePtyRequest {
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "printf hello; sleep 30".into()],
-        cwd: cwd.to_string_lossy().into_owned(),
-        title: "M14-01 e2e".into(),
-        env: BTreeMap::new(),
-    }));
+    assert!(started.engine.create_pty(
+        &started.directory,
+        CreatePtyRequest {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf hello; sleep 30".into()],
+            cwd: cwd.to_string_lossy().into_owned(),
+            title: "M14-01 e2e".into(),
+            env: BTreeMap::new(),
+        }
+    ));
     let EngineEvent::PtyCreated { pty } = support::wait_for(&started.events, deadline, |event| {
         matches!(event, EngineEvent::PtyCreated { .. })
     }) else {
@@ -84,7 +87,7 @@ fn pty_streams_output_resizes_and_terminates() {
     assert!(pty.status.is_running());
     assert!(pty.pid > 0);
 
-    assert!(started.engine.connect_pty(&pty.id));
+    assert!(started.engine.connect_pty(&started.directory, &pty.id));
     deadline = Instant::now() + Duration::from_secs(30);
     let output = wait_for_output(&started, deadline, &pty.id, b"hello");
     assert!(
@@ -93,7 +96,11 @@ fn pty_streams_output_resizes_and_terminates() {
         String::from_utf8_lossy(&output)
     );
 
-    assert!(started.engine.resize_pty(&pty.id, 100, 30));
+    assert!(
+        started
+            .engine
+            .resize_pty(&started.directory, &pty.id, 100, 30)
+    );
     let EngineEvent::PtyCreated { pty: resized } = support::wait_for(
         &started.events,
         deadline,
@@ -107,7 +114,7 @@ fn pty_streams_output_resizes_and_terminates() {
     // would not prove that DELETE terminated it.
     assert!(alive(pty.pid), "PTY pid {} exited too early", pty.pid);
 
-    assert!(started.engine.delete_pty(&pty.id));
+    assert!(started.engine.delete_pty(&started.directory, &pty.id));
     let EngineEvent::PtyClosed { id } = support::wait_for(&started.events, deadline, |event| {
         matches!(event, EngineEvent::PtyClosed { .. })
     }) else {
@@ -123,7 +130,7 @@ fn pty_streams_output_resizes_and_terminates() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    assert!(started.engine.list_ptys());
+    assert!(started.engine.list_ptys(&started.directory,));
     let EngineEvent::PtysLoaded { result } =
         support::wait_for(&started.events, deadline, |event| {
             matches!(event, EngineEvent::PtysLoaded { .. })

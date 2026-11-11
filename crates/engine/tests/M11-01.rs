@@ -21,7 +21,7 @@ fn canonical(project: &TestProject) -> String {
 }
 
 fn select(started: &Started, id: &str, deadline: Instant) -> Vec<Session> {
-    assert!(started.engine.select_project(ProjectId::from(id)));
+    assert!(started.engine.select_project(id, ProjectId::from(id)));
     let EngineEvent::ProjectSelected { canonical, .. } =
         support::wait_for(&started.events, deadline, |event| {
             matches!(event, EngineEvent::ProjectSelected { .. })
@@ -40,8 +40,8 @@ fn select(started: &Started, id: &str, deadline: Instant) -> Vec<Session> {
     sessions
 }
 
-fn create_session(started: &Started, deadline: Instant) -> Session {
-    assert!(started.engine.create_session());
+fn create_session(started: &Started, directory: &str, deadline: Instant) -> Session {
+    assert!(started.engine.create_session(directory));
     let EngineEvent::SessionCreated { session } =
         support::wait_for(&started.events, deadline, |event| {
             matches!(event, EngineEvent::SessionCreated { .. })
@@ -71,7 +71,33 @@ fn projects_scope_sessions_by_directory() {
     let started = support::start_engine(&first);
     support::wait_for_stream(&started.events, Instant::now() + Duration::from_secs(30));
 
-    let first_session = create_session(&started, Instant::now() + Duration::from_secs(30));
+    // A symlinked path addresses the same folder, but the server compares
+    // canonical strings, so the supervisor must reject it explicitly.
+    #[cfg(unix)]
+    {
+        let link =
+            std::env::temp_dir().join(format!("rust-harness-project-link-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&first_dir, &link).expect("create symlink");
+        assert!(started.engine.refresh_sessions(link.to_string_lossy()));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let EngineEvent::CommandFailed { message } =
+            support::wait_for(&started.events, deadline, |event| {
+                matches!(event, EngineEvent::CommandFailed { .. })
+            })
+        else {
+            unreachable!("predicate only accepts CommandFailed")
+        };
+        assert!(message.contains("must be canonical"), "{message}");
+        assert!(message.contains(&first_dir), "{message}");
+        let _ = std::fs::remove_file(&link);
+    }
+
+    let first_session = create_session(
+        &started,
+        &first_dir,
+        Instant::now() + Duration::from_secs(30),
+    );
     if let Some(location) = &first_session.location {
         assert_eq!(location.directory, first_dir);
     }
@@ -80,7 +106,7 @@ fn projects_scope_sessions_by_directory() {
     assert!(
         started
             .engine
-            .select_project(ProjectId::from(second_dir.as_str()))
+            .select_project(&second_dir, ProjectId::from(second_dir.as_str()))
     );
     let EngineEvent::ProjectSelected { .. } =
         support::wait_for(&started.events, deadline, |event| {
@@ -89,7 +115,7 @@ fn projects_scope_sessions_by_directory() {
     else {
         unreachable!()
     };
-    let second_session = create_session(&started, deadline);
+    let second_session = create_session(&started, &second_dir, deadline);
     if let Some(location) = &second_session.location {
         assert_eq!(location.directory, second_dir);
     }
@@ -116,7 +142,7 @@ fn projects_scope_sessions_by_directory() {
 
     // The server materialized both directories as projects when sessions were
     // created for them.
-    assert!(started.engine.list_projects());
+    assert!(started.engine.list_projects(&first_dir));
     let EngineEvent::ProjectsLoaded { result } =
         support::wait_for(&started.events, deadline, |event| {
             matches!(event, EngineEvent::ProjectsLoaded { .. })

@@ -27,7 +27,7 @@ fn answers_a_form_and_it_settles() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -36,6 +36,7 @@ fn answers_a_form_and_it_settles() {
     let id = session.id;
 
     assert!(started.engine.create_form(
+        &started.directory,
         &id,
         "Ask",
         serde_json::json!([{ "key": "name", "type": "string", "required": true }]),
@@ -47,7 +48,7 @@ fn answers_a_form_and_it_settles() {
     };
     assert_eq!(form.fields.len(), 1);
 
-    assert!(started.engine.load_forms(&id));
+    assert!(started.engine.load_forms(&started.directory, &id));
     let EngineEvent::FormsLoaded { forms, .. } = support::wait_for(
         &events,
         deadline,
@@ -57,18 +58,19 @@ fn answers_a_form_and_it_settles() {
     };
     assert_eq!(forms.len(), 1);
 
-    assert!(
-        started
-            .engine
-            .reply_form(&id, form.id.clone(), serde_json::json!({"name":"Ada"}))
-    );
+    assert!(started.engine.reply_form(
+        &started.directory,
+        &id,
+        form.id.clone(),
+        serde_json::json!({"name":"Ada"})
+    ));
     support::wait_for(
         &events,
         deadline,
         |event| matches!(event, EngineEvent::FormSettled { form_id } if form_id == &form.id),
     );
 
-    assert!(started.engine.load_forms(&id));
+    assert!(started.engine.load_forms(&started.directory, &id));
     let EngineEvent::FormsLoaded { forms, .. } = support::wait_for(
         &events,
         deadline,

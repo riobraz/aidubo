@@ -46,8 +46,8 @@ Three slices, each with its own commit:
 - [x] Engine project listing and selection; four engine unit tests.
 - [x] Sidebar project switcher and `Cmd/Ctrl+Shift+P`.
 - [x] `tests/M11-01.rs`: two projects, crossed lists, restart durability.
-- [ ] Slice 2: explicit directory on every project-scoped command.
-- [ ] Slice 2: canonicalization rejection and `ARCHITECTURE.md` §5/§6.2.
+- [x] Slice 2: explicit directory on every project-scoped command.
+- [x] Slice 2: canonicalization rejection and `ARCHITECTURE.md` §5/§6.2.
 - [ ] Slice 3: app-data persistence and missing-path notice.
 
 ## Test plan

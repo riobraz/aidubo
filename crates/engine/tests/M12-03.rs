@@ -50,7 +50,7 @@ fn turn_done_notifies_once_across_replay() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -58,11 +58,11 @@ fn turn_done_notifies_once_across_replay() {
     };
     let session_id = session.id.clone();
 
-    assert!(
-        started
-            .engine
-            .rename_session(session_id.clone(), "Notification test")
-    );
+    assert!(started.engine.rename_session(
+        &started.directory,
+        session_id.clone(),
+        "Notification test"
+    ));
     let EngineEvent::SessionRenamed { title, .. } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionRenamed { .. })
     }) else {
@@ -70,6 +70,7 @@ fn turn_done_notifies_once_across_replay() {
     };
 
     assert!(started.engine.send_prompt(
+        &started.directory,
         session_id.clone(),
         PromptRequest {
             text: "say ok".into(),

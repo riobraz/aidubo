@@ -59,7 +59,11 @@ fn loads_working_tree_status_and_base() {
         std::fs::write(project.join("trigger.txt"), format!("{attempt}\n")).expect("trigger");
         std::thread::sleep(Duration::from_millis(400));
         let request_id = attempt + 1;
-        assert!(started.engine.load_vcs_status(request_id));
+        assert!(
+            started
+                .engine
+                .load_vcs_status(&started.directory, request_id)
+        );
         let EngineEvent::VcsStatusLoaded {
             request_id: got,
             result,
@@ -86,7 +90,7 @@ fn loads_working_tree_status_and_base() {
     assert_eq!(file.deletions, 1);
     assert_eq!(file.status, "modified");
 
-    assert!(started.engine.load_vcs_base(2));
+    assert!(started.engine.load_vcs_base(&started.directory, 2));
     let EngineEvent::VcsBaseLoaded { result, .. } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::VcsBaseLoaded { .. })
     }) else {
@@ -122,7 +126,7 @@ fn initializes_a_repository_when_missing() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.init_repo(1));
+    assert!(started.engine.init_repo(&started.directory, 1));
     let EngineEvent::RepoInitialized { request_id, result } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::RepoInitialized { .. })

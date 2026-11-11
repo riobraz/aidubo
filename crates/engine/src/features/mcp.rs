@@ -15,10 +15,10 @@ pub(crate) fn mcp_config_body(config: serde_json::Value) -> Result<serde_json::V
 }
 
 impl SessionApi {
-    pub async fn mcp_servers(&self) -> Result<Vec<McpServer>, String> {
+    pub async fn mcp_servers(&self, directory: &str) -> Result<Vec<McpServer>, String> {
         let response = self
             .request(Method::GET, "/api/mcp")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -27,7 +27,12 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn add_mcp(&self, name: &str, config: serde_json::Value) -> Result<(), String> {
+    pub async fn add_mcp(
+        &self,
+        directory: &str,
+        name: &str,
+        config: serde_json::Value,
+    ) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("MCP server needs a name.".into());
@@ -35,7 +40,7 @@ impl SessionApi {
         let body = mcp_config_body(config)?;
         let response = self
             .request(Method::PUT, &format!("/api/experimental/mcp/{name}"))
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .json(&body)
             .send()
             .await
@@ -44,10 +49,10 @@ impl SessionApi {
         Ok(())
     }
 
-    pub async fn remove_mcp(&self, name: &str) -> Result<(), String> {
+    pub async fn remove_mcp(&self, directory: &str, name: &str) -> Result<(), String> {
         let response = self
             .request(Method::DELETE, &format!("/api/experimental/mcp/{name}"))
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -55,13 +60,13 @@ impl SessionApi {
         Ok(())
     }
 
-    pub async fn connect_mcp(&self, name: &str) -> Result<(), String> {
+    pub async fn connect_mcp(&self, directory: &str, name: &str) -> Result<(), String> {
         let response = self
             .request(
                 Method::POST,
                 &format!("/api/experimental/mcp/{name}/connect"),
             )
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -69,13 +74,13 @@ impl SessionApi {
         Ok(())
     }
 
-    pub async fn disconnect_mcp(&self, name: &str) -> Result<(), String> {
+    pub async fn disconnect_mcp(&self, directory: &str, name: &str) -> Result<(), String> {
         let response = self
             .request(
                 Method::POST,
                 &format!("/api/experimental/mcp/{name}/disconnect"),
             )
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;

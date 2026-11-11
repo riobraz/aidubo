@@ -40,7 +40,7 @@ fn lists_and_cancels_a_queued_prompt() {
     let deadline = Instant::now() + Duration::from_secs(90);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -49,6 +49,7 @@ fn lists_and_cancels_a_queued_prompt() {
     let id = session.id;
 
     assert!(started.engine.send_prompt(
+        &started.directory,
         &id,
         PromptRequest {
             text: "first".into(),
@@ -63,6 +64,7 @@ fn lists_and_cancels_a_queued_prompt() {
     });
 
     assert!(started.engine.send_prompt(
+        &started.directory,
         &id,
         PromptRequest {
             text: "second".into(),
@@ -73,7 +75,7 @@ fn lists_and_cancels_a_queued_prompt() {
 
     let mut queued = Vec::new();
     for _ in 0..30 {
-        assert!(started.engine.load_inbox(&id));
+        assert!(started.engine.load_inbox(&started.directory, &id));
         let EngineEvent::InboxLoaded { items, .. } =
             support::wait_for(&events, deadline, |event| {
                 matches!(event, EngineEvent::InboxLoaded { .. })
@@ -100,7 +102,11 @@ fn lists_and_cancels_a_queued_prompt() {
         .expect("queued item")
         .id
         .clone();
-    assert!(started.engine.cancel_inbox(&id, inbox_id));
+    assert!(
+        started
+            .engine
+            .cancel_inbox(&started.directory, &id, inbox_id)
+    );
     let EngineEvent::InboxLoaded { items, .. } = support::wait_for(
         &events,
         deadline,

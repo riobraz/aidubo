@@ -56,7 +56,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn api(port: u16) -> SessionApi {
-    SessionApi::new(port, "secret".into(), &std::env::temp_dir()).expect("api")
+    SessionApi::new(port, "secret".into()).expect("api")
 }
 
 fn body_of(request: &str) -> serde_json::Value {
@@ -121,7 +121,10 @@ async fn find_files_sends_the_location_query_and_decodes_entries() {
         r#"{"location":"/tmp","data":[{"path":"src/main.rs","type":"file"},{"path":"src/lib.rs","type":"file"}]}"#,
     );
 
-    let files = api(port).find_files("src/", 24).await.expect("files");
+    let files = api(port)
+        .find_files(&std::env::temp_dir().to_string_lossy(), "src/", 24)
+        .await
+        .expect("files");
     assert_eq!(files.len(), 2);
     assert_eq!(files[0].path, "src/main.rs");
     assert_eq!(files[0].kind, "file");
@@ -140,7 +143,10 @@ async fn catalogs_ignore_unknown_fields_and_reject_malformed_payloads() {
         "200 OK",
         r#"{"data":[{"id":"c1","modelID":"claude-x","providerID":"anthropic","name":"Claude X","enabled":true,"extra":{"nested":1}}]}"#,
     );
-    let models = api(port).models().await.expect("models");
+    let models = api(port)
+        .models(&std::env::temp_dir().to_string_lossy())
+        .await
+        .expect("models");
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].wire_id(), "claude-x");
     assert_eq!(
@@ -155,7 +161,10 @@ async fn catalogs_ignore_unknown_fields_and_reject_malformed_payloads() {
     assert!(raw.starts_with("GET /api/model?location%5Bdirectory%5D="));
 
     let (port, receiver) = serve_once("200 OK", "not json");
-    let error = api(port).skills().await.expect_err("malformed catalog");
+    let error = api(port)
+        .skills(&std::env::temp_dir().to_string_lossy())
+        .await
+        .expect_err("malformed catalog");
     assert!(error.contains("unreadable response"), "{error}");
     let _ = receive(receiver);
 }
@@ -215,13 +224,16 @@ async fn command_posts_arguments_and_attachments() {
 
 #[tokio::test]
 async fn key_never_appears_in_debug_output() {
-    use crate::{EngineCommand, Secret};
+    use crate::{EngineCommand, EngineCommandKind, Secret};
 
     let secret = Secret::new("sk-live-abcdef1234567890");
-    let command = EngineCommand::SendKey {
-        integration_id: "acme".into(),
-        key: secret.clone(),
-    };
+    let command = EngineCommand::new(
+        std::env::temp_dir().to_string_lossy(),
+        EngineCommandKind::SendKey {
+            integration_id: "acme".into(),
+            key: secret.clone(),
+        },
+    );
     let debug = format!("{command:?}");
     assert!(!debug.contains("sk-live-abcdef1234567890"), "{debug}");
     assert!(debug.contains("[redacted]"), "{debug}");
@@ -238,8 +250,9 @@ async fn key_error_body_is_scrubbed() {
         "404 Not Found",
         r#"{"message":"integration refused sk-live-abcdef1234567890"}"#,
     );
+    let directory = std::env::temp_dir().to_string_lossy().into_owned();
     let error = api(port)
-        .send_key("acme", &Secret::new("sk-live-abcdef1234567890"))
+        .send_key(&directory, "acme", &Secret::new("sk-live-abcdef1234567890"))
         .await
         .expect_err("missing integration");
     assert!(!error.contains("sk-live-abcdef1234567890"), "{error}");
@@ -257,9 +270,11 @@ async fn pty_ticket_is_requested_before_connect() {
         r#"{"location":"/tmp","data":{"ticket":"tok-123","expires_in":60}}"#,
     );
     let api = api(port);
+    let directory = temp_project("pty");
+    let directory = directory.to_string_lossy().into_owned();
 
     // The connect URL can only be built from a ticket the server just issued.
-    let ticket = api.pty_ticket("pty_1").await.expect("ticket");
+    let ticket = api.pty_ticket(&directory, "pty_1").await.expect("ticket");
     assert_eq!(ticket.ticket, "tok-123");
     assert_eq!(ticket.expires_in, 60);
 
@@ -272,13 +287,14 @@ async fn pty_ticket_is_requested_before_connect() {
     assert!(raw.to_lowercase().contains("x-opencode-ticket: 1"), "{raw}");
 
     let url = api
-        .pty_connect_url("pty_1", &ticket.ticket, Some(42))
+        .pty_connect_url(&directory, "pty_1", &ticket.ticket, Some(42))
         .expect("connect url");
     assert!(url.starts_with("ws://127.0.0.1:"), "{url}");
     assert!(url.contains("/api/pty/pty_1/connect?"), "{url}");
     assert!(url.contains("ticket=tok-123"), "{url}");
     assert!(url.contains("cursor=42"), "{url}");
     assert!(url.contains("location%5Bdirectory%5D="), "{url}");
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 fn temp_project(tag: &str) -> std::path::PathBuf {
@@ -343,9 +359,9 @@ async fn list_sessions_scopes_by_directory() {
     let directory = temp_project("list");
     let canonical = directory.to_string_lossy().into_owned();
     let (port, receiver) = serve_once("200 OK", r#"{"data":[]}"#);
-    let api = SessionApi::new(port, "secret".into(), &directory).expect("api");
+    let api = SessionApi::new(port, "secret".into()).expect("api");
 
-    let sessions = api.list().await.expect("sessions");
+    let sessions = api.list(&canonical).await.expect("sessions");
     assert!(sessions.is_empty());
 
     let raw = receive(receiver);
@@ -364,9 +380,9 @@ async fn create_session_pins_directory() {
     let directory = temp_project("create");
     let canonical = directory.to_string_lossy().into_owned();
     let (port, receiver) = serve_once("200 OK", r#"{"data":{"id":"s1"}}"#);
-    let api = SessionApi::new(port, "secret".into(), &directory).expect("api");
+    let api = SessionApi::new(port, "secret".into()).expect("api");
 
-    let session = api.create().await.expect("created session");
+    let session = api.create(&canonical).await.expect("created session");
     assert_eq!(session.id, "s1");
 
     let raw = receive(receiver);

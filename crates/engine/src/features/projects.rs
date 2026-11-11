@@ -53,8 +53,7 @@ mod tests {
             String::from_utf8_lossy(&buffer).to_string()
         });
 
-        let api =
-            SessionApi::new(port, "secret".into(), std::path::Path::new("/tmp")).expect("api");
+        let api = SessionApi::new(port, "secret".into()).expect("api");
         let projects = api.projects().await.expect("projects");
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].id.as_str(), "p1");

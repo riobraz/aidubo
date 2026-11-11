@@ -11,12 +11,13 @@ use support::mock::{MockProvider, Script};
 
 fn list_schedules(
     engine: &Engine,
+    directory: &str,
     events: &Receiver<EngineEvent>,
     request_id: u64,
     session_id: &str,
     deadline: Instant,
 ) -> Vec<ScheduleInfo> {
-    assert!(engine.load_schedules(request_id, session_id));
+    assert!(engine.load_schedules(directory, request_id, session_id));
     let EngineEvent::SchedulesLoaded { result, .. } =
         support::wait_for(events, deadline, |event| {
             matches!(
@@ -54,7 +55,7 @@ fn schedules_a_prompt() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -64,6 +65,7 @@ fn schedules_a_prompt() {
 
     // A one-shot relative schedule must fire on the server's clock.
     assert!(started.engine.create_schedule(
+        &started.directory,
         1,
         CreateScheduleRequest {
             session_id: session_id.clone(),
@@ -94,6 +96,7 @@ fn schedules_a_prompt() {
     while Instant::now() < fired_deadline {
         let schedules = list_schedules(
             &started.engine,
+            &started.directory,
             &events,
             request_id,
             &session_id,
@@ -114,6 +117,7 @@ fn schedules_a_prompt() {
 
     // A recurring schedule can be paused and resumed without losing its count.
     assert!(started.engine.create_schedule(
+        &started.directory,
         20,
         CreateScheduleRequest {
             session_id: session_id.clone(),
@@ -138,15 +142,23 @@ fn schedules_a_prompt() {
         .find(|schedule| schedule.name == "loop")
         .expect("recurring schedule missing");
 
-    assert!(
-        started
-            .engine
-            .pause_schedule(30, session_id.clone(), looped.id.clone())
-    );
+    assert!(started.engine.pause_schedule(
+        &started.directory,
+        30,
+        session_id.clone(),
+        looped.id.clone()
+    ));
     support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SchedulesLoaded { request_id: 30, .. })
     });
-    let paused = list_schedules(&started.engine, &events, 31, &session_id, deadline);
+    let paused = list_schedules(
+        &started.engine,
+        &started.directory,
+        &events,
+        31,
+        &session_id,
+        deadline,
+    );
     let paused = paused
         .iter()
         .find(|schedule| schedule.id == looped.id)
@@ -155,22 +167,37 @@ fn schedules_a_prompt() {
     let paused_runs = paused.run_count;
 
     std::thread::sleep(Duration::from_secs(3));
-    let stable = list_schedules(&started.engine, &events, 32, &session_id, deadline);
+    let stable = list_schedules(
+        &started.engine,
+        &started.directory,
+        &events,
+        32,
+        &session_id,
+        deadline,
+    );
     let stable = stable
         .iter()
         .find(|schedule| schedule.id == looped.id)
         .expect("paused schedule missing");
     assert_eq!(stable.run_count, paused_runs);
 
-    assert!(
-        started
-            .engine
-            .resume_schedule(40, session_id.clone(), looped.id.clone())
-    );
+    assert!(started.engine.resume_schedule(
+        &started.directory,
+        40,
+        session_id.clone(),
+        looped.id.clone()
+    ));
     support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SchedulesLoaded { request_id: 40, .. })
     });
-    let resumed = list_schedules(&started.engine, &events, 41, &session_id, deadline);
+    let resumed = list_schedules(
+        &started.engine,
+        &started.directory,
+        &events,
+        41,
+        &session_id,
+        deadline,
+    );
     assert_eq!(
         resumed
             .iter()
@@ -180,15 +207,23 @@ fn schedules_a_prompt() {
         ScheduleStatus::Active
     );
 
-    assert!(
-        started
-            .engine
-            .delete_schedule(50, session_id.clone(), looped.id.clone())
-    );
+    assert!(started.engine.delete_schedule(
+        &started.directory,
+        50,
+        session_id.clone(),
+        looped.id.clone()
+    ));
     support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SchedulesLoaded { request_id: 50, .. })
     });
-    let after_delete = list_schedules(&started.engine, &events, 51, &session_id, deadline);
+    let after_delete = list_schedules(
+        &started.engine,
+        &started.directory,
+        &events,
+        51,
+        &session_id,
+        deadline,
+    );
     assert!(
         !after_delete.iter().any(|schedule| schedule.id == looped.id),
         "deleted schedule is still listed"

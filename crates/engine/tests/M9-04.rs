@@ -40,7 +40,7 @@ fn compacts_and_the_session_stays_usable() {
     let deadline = Instant::now() + Duration::from_secs(120);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -49,6 +49,7 @@ fn compacts_and_the_session_stays_usable() {
     let id = session.id;
 
     assert!(started.engine.send_prompt(
+        &started.directory,
         &id,
         PromptRequest {
             text: "first".into(),
@@ -62,7 +63,7 @@ fn compacts_and_the_session_stays_usable() {
         )
     });
 
-    assert!(started.engine.compact(&id));
+    assert!(started.engine.compact(&started.directory, &id));
     support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::CompactionRequested { .. })
     });
@@ -76,6 +77,7 @@ fn compacts_and_the_session_stays_usable() {
     });
 
     assert!(started.engine.send_prompt(
+        &started.directory,
         &id,
         PromptRequest {
             text: "after".into(),

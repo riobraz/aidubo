@@ -27,7 +27,7 @@ fn lists_saved_permissions_for_the_project() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -35,7 +35,11 @@ fn lists_saved_permissions_for_the_project() {
     };
     let project_id = session.project_id.expect("session project id");
 
-    assert!(started.engine.load_saved_permissions(1, project_id));
+    assert!(
+        started
+            .engine
+            .load_saved_permissions(&started.directory, 1, project_id)
+    );
     let EngineEvent::SavedPermissionsLoaded { request_id, result } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::SavedPermissionsLoaded { .. })

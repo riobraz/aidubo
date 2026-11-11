@@ -29,7 +29,11 @@ fn wait_for_messages(
     deadline: Instant,
 ) -> usize {
     loop {
-        assert!(started.engine.load_transcript(session_id));
+        assert!(
+            started
+                .engine
+                .load_transcript(&started.directory, session_id)
+        );
         let EngineEvent::TranscriptLoaded { messages, .. } =
             support::wait_for(&started.events, deadline, |event| {
                 matches!(event, EngineEvent::TranscriptLoaded { .. })
@@ -54,7 +58,11 @@ fn export(
     path: &std::path::Path,
     deadline: Instant,
 ) -> SessionTransfer {
-    assert!(started.engine.export_session(session_id, sanitize, path));
+    assert!(
+        started
+            .engine
+            .export_session(&started.directory, session_id, sanitize, path)
+    );
     let EngineEvent::SessionExported { bytes, .. } =
         support::wait_for(&started.events, deadline, |event| {
             matches!(event, EngineEvent::SessionExported { .. })
@@ -87,23 +95,24 @@ fn exports_imports_and_reports_stats() {
     let deadline = Instant::now() + Duration::from_secs(120);
     support::wait_for_stream(&events_a, deadline);
 
-    assert!(started_a.engine.create_session());
+    assert!(started_a.engine.create_session(&started_a.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events_a, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
         unreachable!()
     };
     let original_id = session.id.clone();
-    assert!(
-        started_a
-            .engine
-            .rename_session(original_id.clone(), "Transfer round trip")
-    );
+    assert!(started_a.engine.rename_session(
+        &started_a.directory,
+        original_id.clone(),
+        "Transfer round trip"
+    ));
     support::wait_for(&events_a, deadline, |event| {
         matches!(event, EngineEvent::SessionRenamed { .. })
     });
 
     assert!(started_a.engine.send_prompt(
+        &started_a.directory,
         original_id.clone(),
         PromptRequest {
             text: "say ok".into(),
@@ -156,7 +165,11 @@ fn exports_imports_and_reports_stats() {
     let events_b = started_b.events.clone();
     support::wait_for_stream(&events_b, deadline);
 
-    assert!(started_b.engine.import_session(&plain_path, true));
+    assert!(
+        started_b
+            .engine
+            .import_session(&started_b.directory, &plain_path, true)
+    );
     let EngineEvent::SessionImported { session } =
         support::wait_for(&events_b, deadline, |event| {
             matches!(event, EngineEvent::SessionImported { .. })
@@ -176,7 +189,11 @@ fn exports_imports_and_reports_stats() {
 
     // Installing the same export without a copy is refused: the id exists and
     // the server never overwrites a session.
-    assert!(started_b.engine.import_session(&plain_path, false));
+    assert!(
+        started_b
+            .engine
+            .import_session(&started_b.directory, &plain_path, false)
+    );
     let EngineEvent::SessionImportError { message } =
         support::wait_for(&events_b, deadline, |event| {
             matches!(event, EngineEvent::SessionImportError { .. })
@@ -189,7 +206,7 @@ fn exports_imports_and_reports_stats() {
         "unexpected import error: {message}"
     );
 
-    assert!(started_b.engine.refresh_sessions());
+    assert!(started_b.engine.refresh_sessions(&started_b.directory,));
     let EngineEvent::SessionsLoaded { sessions } =
         support::wait_for(&events_b, deadline, |event| {
             matches!(event, EngineEvent::SessionsLoaded { .. })
@@ -213,6 +230,7 @@ fn exports_imports_and_reports_stats() {
 
     // Statistics are global, so a wide range must include this turn.
     assert!(started_b.engine.load_stats(
+        &started_b.directory,
         1,
         StatsRange {
             from: 0,
@@ -229,13 +247,21 @@ fn exports_imports_and_reports_stats() {
     assert!(stats.prompts >= 1);
 
     // Delete both sessions so the test does not accumulate storage.
-    assert!(started_b.engine.delete_session(imported_id.clone()));
+    assert!(
+        started_b
+            .engine
+            .delete_session(&started_b.directory, imported_id.clone())
+    );
     support::wait_for(
         &events_b,
         deadline,
         |event| matches!(event, EngineEvent::SessionDeleted { id } if id == &imported_id),
     );
-    assert!(started_a.engine.delete_session(original_id.clone()));
+    assert!(
+        started_a
+            .engine
+            .delete_session(&started_a.directory, original_id.clone())
+    );
     support::wait_for(
         &events_a,
         deadline,

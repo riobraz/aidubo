@@ -6,10 +6,10 @@ use reqwest::Method;
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
 impl SessionApi {
-    pub async fn vcs_status(&self) -> Result<Vec<VcsFileStatus>, String> {
+    pub async fn vcs_status(&self, directory: &str) -> Result<Vec<VcsFileStatus>, String> {
         let response = self
             .request(Method::GET, "/api/vcs/status")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -18,10 +18,10 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn vcs_base(&self) -> Result<Option<VcsBase>, String> {
+    pub async fn vcs_base(&self, directory: &str) -> Result<Option<VcsBase>, String> {
         let response = self
             .request(Method::GET, "/api/vcs/base")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -30,13 +30,10 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn vcs_init(&self) -> Result<(), String> {
+    pub async fn vcs_init(&self, directory: &str) -> Result<(), String> {
         let response = self
             .request(Method::POST, "/api/vcs/init")
-            .query(&[
-                ("location[directory]", self.directory.as_str()),
-                ("provider", "git"),
-            ])
+            .query(&[("location[directory]", directory), ("provider", "git")])
             .send()
             .await
             .map_err(network_error)?;

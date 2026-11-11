@@ -33,6 +33,14 @@ impl TestProject {
         &self.path
     }
 
+    /// The canonical path the engine requires for every command.
+    pub fn canonical(&self) -> String {
+        std::fs::canonicalize(&self.path)
+            .expect("canonicalize temp project")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     pub fn join(&self, name: &str) -> PathBuf {
         self.path.join(name)
     }
@@ -116,6 +124,8 @@ pub struct Started {
     pub engine: Engine,
     pub events: Receiver<EngineEvent>,
     pub port: u16,
+    /// The canonical project directory commands must name.
+    pub directory: String,
 }
 
 /// Spawn the engine and wait until it answers an authenticated request.
@@ -124,6 +134,10 @@ pub fn start_engine(project: &TestProject) -> Started {
 }
 
 pub fn start_engine_with(config: EngineConfig) -> Started {
+    let directory = std::fs::canonicalize(&config.project_dir)
+        .unwrap_or_else(|_| config.project_dir.clone())
+        .to_string_lossy()
+        .into_owned();
     let engine = Engine::spawn(config);
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -136,6 +150,7 @@ pub fn start_engine_with(config: EngineConfig) -> Started {
         engine,
         events,
         port,
+        directory,
     }
 }
 

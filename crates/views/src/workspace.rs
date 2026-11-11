@@ -290,7 +290,7 @@ impl WorkspaceView {
                     }
                     if this.mcp_reload_due.is_some_and(|due| now >= due) {
                         this.mcp_reload_due = None;
-                        this.engine.load_mcp(3);
+                        this.engine.load_mcp(this.directory(), 3);
                     }
                 });
                 if updated.is_err() {
@@ -445,11 +445,11 @@ impl WorkspaceView {
             }
             EngineEvent::Ready { version, port } => {
                 self.request_vcs_status();
-                self.engine.load_usage_limits(1);
-                self.engine.load_plugins(1);
-                self.engine.load_mcp(1);
-                self.engine.load_providers(1);
-                self.engine.load_integrations(1);
+                self.engine.load_usage_limits(self.directory(), 1);
+                self.engine.load_plugins(self.directory(), 1);
+                self.engine.load_mcp(self.directory(), 1);
+                self.engine.load_providers(self.directory(), 1);
+                self.engine.load_integrations(self.directory(), 1);
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -457,7 +457,7 @@ impl WorkspaceView {
                     (3, CatalogKind::Agents),
                     (4, CatalogKind::Models),
                 ] {
-                    self.engine.list_catalog(request_id, kind);
+                    self.engine.list_catalog(self.directory(), request_id, kind);
                 }
             }
             EngineEvent::Failed { message } => {
@@ -586,7 +586,7 @@ impl WorkspaceView {
                 self.providers.mark_connected(&integration_id);
                 self.error = None;
                 self.close_provider_dialog(&integration_id);
-                self.engine.load_integrations(2);
+                self.engine.load_integrations(self.directory(), 2);
             }
             EngineEvent::SavedPermissionsLoaded { result, .. } => {
                 if let Ok(rules) = result {
@@ -605,7 +605,7 @@ impl WorkspaceView {
                 }
             }
             EngineEvent::McpChanged { .. } => {
-                self.engine.load_mcp(2);
+                self.engine.load_mcp(self.directory(), 2);
             }
             EngineEvent::McpError { message, .. } => {
                 self.pending_mcp_remove = None;
@@ -619,7 +619,7 @@ impl WorkspaceView {
             EngineEvent::PluginsChecked { .. } => {}
             EngineEvent::PluginUpdated { .. } => {
                 self.pending_plugin_update = None;
-                self.engine.load_plugins(2);
+                self.engine.load_plugins(self.directory(), 2);
             }
             EngineEvent::UsageLimitsLoaded { result, .. } => match result {
                 Ok(limits) => self.usage.set(limits, now_ms()),
@@ -632,7 +632,7 @@ impl WorkspaceView {
             EngineEvent::RevertCommitted { session_id, .. } => {
                 self.revert.acknowledge();
                 self.transcript.begin(&session_id);
-                self.engine.load_transcript(session_id);
+                self.engine.load_transcript(self.directory(), session_id);
             }
             EngineEvent::RevertCleared { .. } => self.revert.clear(),
             EngineEvent::FormCreated { form } => {
@@ -654,8 +654,8 @@ impl WorkspaceView {
                 self.sessions.select(&id);
                 self.error = None;
                 self.transcript.begin(&id);
-                self.engine.load_transcript(&id);
-                self.engine.load_permissions(&id);
+                self.engine.load_transcript(self.directory(), &id);
+                self.engine.load_permissions(self.directory(), &id);
                 self.reset_schedules(&id);
             }
             EngineEvent::SessionCreated { session } => {
@@ -667,19 +667,20 @@ impl WorkspaceView {
                 self.pending_delete = None;
                 self.error = None;
                 self.transcript.begin(&id);
-                self.engine.load_transcript(id.clone());
+                self.engine.load_transcript(self.directory(), id.clone());
                 self.permissions.begin(&id);
-                self.engine.load_permissions(id.clone());
+                self.engine.load_permissions(self.directory(), id.clone());
                 self.inbox.begin(&id);
-                self.engine.load_inbox(id.clone());
-                self.engine.load_forms(id.clone());
+                self.engine.load_inbox(self.directory(), id.clone());
+                self.engine.load_forms(self.directory(), id.clone());
                 self.reset_schedules(&id);
                 if let Some(project_id) = self
                     .sessions
                     .selected()
                     .and_then(|session| session.project_id.clone())
                 {
-                    self.engine.load_saved_permissions(1, project_id);
+                    self.engine
+                        .load_saved_permissions(self.directory(), 1, project_id);
                 }
             }
             EngineEvent::SessionRenamed { id, title } => {
@@ -731,14 +732,14 @@ impl WorkspaceView {
                 self.sessions.select(&id);
                 self.error = None;
                 self.transcript.begin(&id);
-                self.engine.load_transcript(id.clone());
+                self.engine.load_transcript(self.directory(), id.clone());
                 self.permissions.begin(&id);
-                self.engine.load_permissions(id.clone());
+                self.engine.load_permissions(self.directory(), id.clone());
                 self.inbox.begin(&id);
-                self.engine.load_inbox(id.clone());
-                self.engine.load_forms(id.clone());
+                self.engine.load_inbox(self.directory(), id.clone());
+                self.engine.load_forms(self.directory(), id.clone());
                 self.reset_schedules(&id);
-                self.engine.refresh_sessions();
+                self.engine.refresh_sessions(self.directory());
             }
             EngineEvent::SessionImportError { message } => {
                 self.transfer.importing = false;
@@ -774,7 +775,7 @@ impl WorkspaceView {
                 session_id,
                 message,
             } => {
-                self.engine.load_inbox(session_id.clone());
+                self.engine.load_inbox(self.directory(), session_id.clone());
                 self.transcript.accept_prompt(
                     &session_id,
                     &message.id,
@@ -918,7 +919,7 @@ impl WorkspaceView {
                 self.stream_connected = true;
                 // Events may have been missed while disconnected.
                 self.follow_selection();
-                self.engine.load_mcp(3);
+                self.engine.load_mcp(self.directory(), 3);
             }
             EngineEvent::StreamDisconnected => {
                 self.stream_connected = false;
@@ -929,7 +930,7 @@ impl WorkspaceView {
             } => {
                 // A turn waiting on a permission may cancel its request; the
                 // server's pending list is authoritative.
-                self.engine.load_permissions(session_id);
+                self.engine.load_permissions(self.directory(), session_id);
             }
             EngineEvent::Interrupted { .. } => {}
             // There is no terminal surface yet; M14-02 consumes these.
@@ -943,7 +944,7 @@ impl WorkspaceView {
                 self.error = Some(message);
                 // A failed model/agent change may have left an optimistic badge;
                 // the server snapshot is authoritative.
-                self.engine.refresh_sessions();
+                self.engine.refresh_sessions(self.directory());
             }
         }
     }
@@ -1086,18 +1087,18 @@ impl WorkspaceView {
     /// Reload the server-backed lists that are scoped to a directory.
     fn reload_project_scoped(&mut self) {
         self.request_vcs_status();
-        self.engine.load_usage_limits(1);
-        self.engine.load_plugins(1);
-        self.engine.load_mcp(1);
-        self.engine.load_providers(1);
-        self.engine.load_integrations(1);
+        self.engine.load_usage_limits(self.directory(), 1);
+        self.engine.load_plugins(self.directory(), 1);
+        self.engine.load_mcp(self.directory(), 1);
+        self.engine.load_providers(self.directory(), 1);
+        self.engine.load_integrations(self.directory(), 1);
         for (request_id, kind) in [
             (1, CatalogKind::Commands),
             (2, CatalogKind::Skills),
             (3, CatalogKind::Agents),
             (4, CatalogKind::Models),
         ] {
-            self.engine.list_catalog(request_id, kind);
+            self.engine.list_catalog(self.directory(), request_id, kind);
         }
     }
 
@@ -1106,9 +1107,9 @@ impl WorkspaceView {
         match self.sessions.selected_id().map(str::to_owned) {
             Some(id) => {
                 self.transcript.begin(&id);
-                self.engine.load_transcript(id.clone());
+                self.engine.load_transcript(self.directory(), id.clone());
                 self.permissions.begin(&id);
-                self.engine.load_permissions(id.clone());
+                self.engine.load_permissions(self.directory(), id.clone());
                 if self.schedules_session.as_deref() == Some(id.as_str()) {
                     // The stream may have dropped schedule events; resnapshot.
                     self.load_schedules();
@@ -1151,7 +1152,8 @@ impl WorkspaceView {
         let method_id = method.method_id().map(str::to_string);
         dialog.method = Some(method);
         if is_oauth && let Some(method_id) = method_id {
-            self.engine.start_oauth(integration_id, method_id);
+            self.engine
+                .start_oauth(self.directory(), integration_id, method_id);
         }
     }
 
@@ -1313,7 +1315,11 @@ impl WorkspaceView {
                         .ghost()
                         .label("Check now")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.engine.poll_oauth(id.clone(), attempt_id.clone());
+                            this.engine.poll_oauth(
+                                this.directory(),
+                                id.clone(),
+                                attempt_id.clone(),
+                            );
                             cx.notify();
                         })),
                     );
@@ -1327,7 +1333,11 @@ impl WorkspaceView {
                         .danger()
                         .label("Cancel")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.engine.cancel_oauth(id.clone(), attempt_id.clone());
+                            this.engine.cancel_oauth(
+                                this.directory(),
+                                id.clone(),
+                                attempt_id.clone(),
+                            );
                             cx.notify();
                         })),
                     );
@@ -1377,8 +1387,11 @@ impl WorkspaceView {
                                     .danger()
                                     .label("Cancel")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.engine
-                                            .cancel_command_auth(id.clone(), attempt_id.clone());
+                                        this.engine.cancel_command_auth(
+                                            this.directory(),
+                                            id.clone(),
+                                            attempt_id.clone(),
+                                        );
                                         cx.notify();
                                     })),
                                 ),
@@ -1415,6 +1428,7 @@ impl WorkspaceView {
                                     .label("I ran this command")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.engine.start_command_auth(
+                                            this.directory(),
                                             id.clone(),
                                             method_id.clone(),
                                             start_line.clone(),
@@ -1448,7 +1462,7 @@ impl WorkspaceView {
                                 if key.is_empty() {
                                     return;
                                 }
-                                this.engine.send_key(id.clone(), key.as_str());
+                                this.engine.send_key(this.directory(), id.clone(), key.as_str());
                                 key.clear();
                                 this.provider_key.update(cx, |input, cx| {
                                     input.set_value("", window, cx);
@@ -1475,7 +1489,11 @@ impl WorkspaceView {
                     .primary()
                     .label("Complete connection")
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.engine.connect_external(id.clone(), method_id.clone());
+                        this.engine.connect_external(
+                            this.directory(),
+                            id.clone(),
+                            method_id.clone(),
+                        );
                         cx.notify();
                     })),
                 );
@@ -1513,7 +1531,7 @@ impl WorkspaceView {
         };
         self.schedule_request += 1;
         self.engine
-            .load_schedules(self.schedule_request, session_id);
+            .load_schedules(self.directory(), self.schedule_request, session_id);
     }
 
     /// Validate the form locally, then let the server create the schedule.
@@ -1580,6 +1598,7 @@ impl WorkspaceView {
         let name = prompt.chars().take(40).collect::<String>();
         self.schedule_request += 1;
         self.engine.create_schedule(
+            self.directory(),
             self.schedule_request,
             CreateScheduleRequest {
                 session_id,
@@ -1626,7 +1645,7 @@ impl WorkspaceView {
         self.pending_delete = None;
         self.error = None;
         self.clear_composer(window, cx);
-        if !self.engine.create_session() {
+        if !self.engine.create_session(self.directory()) {
             self.error = Some("The engine is not running.".into());
         }
         cx.notify();
@@ -1685,6 +1704,11 @@ impl WorkspaceView {
         });
     }
 
+    /// The canonical directory every engine command must name.
+    fn directory(&self) -> String {
+        self.project_dir.to_string_lossy().into_owned()
+    }
+
     fn switch_project(&mut self, id: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
         if self.projects.active_id() == Some(&id) {
             self.switcher.close();
@@ -1704,7 +1728,7 @@ impl WorkspaceView {
         self.reset_project_scoped();
         self.switcher.close();
         self.restore_draft(id.as_str(), "", window, cx);
-        if !self.engine.select_project(id) {
+        if !self.engine.select_project(self.directory(), id) {
             self.error = Some("The engine is not running.".into());
         }
         cx.notify();
@@ -1796,7 +1820,7 @@ impl WorkspaceView {
         }
 
         self.error = None;
-        if !self.engine.rename_session(id, title) {
+        if !self.engine.rename_session(self.directory(), id, title) {
             self.error = Some("The engine is not running.".into());
             self.renaming = Some(input);
         }
@@ -1830,7 +1854,7 @@ impl WorkspaceView {
         };
         self.renaming = None;
         self.error = None;
-        if !self.engine.delete_session(&id) {
+        if !self.engine.delete_session(self.directory(), &id) {
             self.error = Some("The engine is not running.".into());
         }
         cx.notify();
@@ -1874,7 +1898,12 @@ impl WorkspaceView {
                 .update(cx, |this, cx| {
                     match picked {
                         Ok(Ok(Some(path))) => {
-                            if this.engine.export_session(id, this.transfer.sanitize, path) {
+                            if this.engine.export_session(
+                                this.directory(),
+                                id,
+                                this.transfer.sanitize,
+                                path,
+                            ) {
                                 this.transfer.exporting = true;
                             } else {
                                 this.error = Some("The engine is not running.".into());
@@ -1916,7 +1945,7 @@ impl WorkspaceView {
                     match picked {
                         Ok(Ok(Some(paths))) => {
                             if let Some(path) = paths.into_iter().next()
-                                && !this.engine.preview_import(path)
+                                && !this.engine.preview_import(this.directory(), path)
                             {
                                 this.error = Some("The engine is not running.".into());
                             }
@@ -1948,7 +1977,7 @@ impl WorkspaceView {
         self.error = None;
         if !self
             .engine
-            .import_session(path, self.transfer.import_as_copy)
+            .import_session(self.directory(), path, self.transfer.import_as_copy)
         {
             self.transfer.importing = false;
             self.error = Some("The engine is not running.".into());
@@ -1988,7 +2017,10 @@ impl WorkspaceView {
         self.stats_request = self.stats_request.wrapping_add(1);
         self.transfer.stats_loading = true;
         self.error = None;
-        if !self.engine.load_stats(self.stats_request, range) {
+        if !self
+            .engine
+            .load_stats(self.directory(), self.stats_request, range)
+        {
             self.transfer.stats_loading = false;
             self.error = Some("The engine is not running.".into());
         }
@@ -2031,7 +2063,7 @@ impl WorkspaceView {
         };
         if !self
             .engine
-            .stage_revert(&session_id, message_id, Some(false))
+            .stage_revert(self.directory(), &session_id, message_id, Some(false))
         {
             self.error = Some("The engine is not running.".into());
         }
@@ -2042,7 +2074,10 @@ impl WorkspaceView {
             self.error = Some("Select a session first.".into());
             return;
         };
-        if !self.engine.fork_session(&session_id, Some(message_id)) {
+        if !self
+            .engine
+            .fork_session(self.directory(), &session_id, Some(message_id))
+        {
             self.error = Some("The engine is not running.".into());
         }
     }
@@ -2050,8 +2085,10 @@ impl WorkspaceView {
     fn request_vcs_status(&mut self) {
         self.vcs.begin_refresh(now_ms());
         self.vcs_request += 1;
-        self.engine.load_vcs_status(self.vcs_request);
-        self.engine.load_vcs_base(self.vcs_request);
+        self.engine
+            .load_vcs_status(self.directory(), self.vcs_request);
+        self.engine
+            .load_vcs_base(self.directory(), self.vcs_request);
     }
 
     fn on_filesystem_changed(&mut self) {
@@ -2064,8 +2101,14 @@ impl WorkspaceView {
 
     fn request_vcs_diff(&mut self) {
         self.vcs_request += 1;
-        self.engine
-            .load_vcs_diff(self.vcs_request, "working", None, None, "files");
+        self.engine.load_vcs_diff(
+            self.directory(),
+            self.vcs_request,
+            "working",
+            None,
+            None,
+            "files",
+        );
     }
 
     fn rebuild_diff(&mut self) {
@@ -2157,7 +2200,8 @@ impl WorkspaceView {
                 .timer(Duration::from_millis(150))
                 .await;
             let _ = this.update(cx, |this, _| {
-                this.engine.find_files(request_id, query, 24);
+                this.engine
+                    .find_files(this.directory(), request_id, query, 24);
             });
         }));
     }
@@ -2178,7 +2222,8 @@ impl WorkspaceView {
             PickerKind::Snippet => false,
         };
         if empty {
-            self.engine.list_catalog(request_id, catalog);
+            self.engine
+                .list_catalog(self.directory(), request_id, catalog);
         }
     }
 
@@ -2225,7 +2270,10 @@ impl WorkspaceView {
                 self.sessions.set_agent(&session_id, id.clone());
                 self.error = None;
                 self.close_picker();
-                if !self.engine.set_session_agent(session_id, id) {
+                if !self
+                    .engine
+                    .set_session_agent(self.directory(), session_id, id)
+                {
                     self.error = Some("The engine is not running.".into());
                 }
                 self.focus_composer(window, cx);
@@ -2260,7 +2308,10 @@ impl WorkspaceView {
                 self.sessions.set_model(&session_id, model.clone());
                 self.error = None;
                 self.close_picker();
-                if !self.engine.set_session_model(session_id, model) {
+                if !self
+                    .engine
+                    .set_session_model(self.directory(), session_id, model)
+                {
                     self.error = Some("The engine is not running.".into());
                 }
                 self.focus_composer(window, cx);
@@ -2397,9 +2448,12 @@ impl WorkspaceView {
                 if self.transcript.is_busy() {
                     request.delivery = Some(InboxDelivery::Queue);
                 }
-                self.engine.send_prompt(id, request)
+                self.engine.send_prompt(self.directory(), id, request)
             }
-            DraftSend::Command(request) => self.engine.run_command(id, request.clone()),
+            DraftSend::Command(request) => {
+                self.engine
+                    .run_command(self.directory(), id, request.clone())
+            }
         };
         if accepted {
             self.clear_composer(window, cx);
@@ -2413,7 +2467,7 @@ impl WorkspaceView {
         let Some(id) = self.sessions.selected_id().map(str::to_owned) else {
             return;
         };
-        if !self.engine.interrupt(id) {
+        if !self.engine.interrupt(self.directory(), id) {
             self.error = Some("The engine is not running.".into());
         }
         cx.notify();
@@ -2430,7 +2484,7 @@ impl WorkspaceView {
         self.error = None;
         if self
             .engine
-            .reply_permission(session_id, request_id.clone(), reply)
+            .reply_permission(self.directory(), session_id, request_id.clone(), reply)
         {
             self.permission_in_flight = Some(request_id);
         } else {
@@ -2655,7 +2709,12 @@ impl WorkspaceView {
                             else {
                                 return;
                             };
-                            this.engine.reply_form(session, form_reply.clone(), answer);
+                            this.engine.reply_form(
+                                this.directory(),
+                                session,
+                                form_reply.clone(),
+                                answer,
+                            );
                             cx.notify();
                         }))
                         .child("Reply"),
@@ -2672,7 +2731,11 @@ impl WorkspaceView {
                             else {
                                 return;
                             };
-                            this.engine.dismiss_form(session, form_dismiss.clone());
+                            this.engine.dismiss_form(
+                                this.directory(),
+                                session,
+                                form_dismiss.clone(),
+                            );
                             cx.notify();
                         }))
                         .child("Dismiss"),
@@ -2718,7 +2781,7 @@ impl WorkspaceView {
                         }
                         if let Some(id) = this.sessions.selected_id().map(str::to_owned) {
                             this.context.begin_compaction();
-                            this.engine.compact(id);
+                            this.engine.compact(this.directory(), id);
                         }
                         cx.notify();
                     }))
@@ -2770,7 +2833,11 @@ impl WorkspaceView {
                                 if let Some(session) =
                                     this.sessions.selected_id().map(str::to_owned)
                                 {
-                                    this.engine.cancel_inbox(session, inbox_id.clone());
+                                    this.engine.cancel_inbox(
+                                        this.directory(),
+                                        session,
+                                        inbox_id.clone(),
+                                    );
                                 }
                                 cx.notify();
                             }))
@@ -3024,6 +3091,7 @@ impl WorkspaceView {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.schedule_request += 1;
                                 this.engine.pause_schedule(
+                                    this.directory(),
                                     this.schedule_request,
                                     session_id.clone(),
                                     pause_id.clone(),
@@ -3041,6 +3109,7 @@ impl WorkspaceView {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.schedule_request += 1;
                                 this.engine.resume_schedule(
+                                    this.directory(),
                                     this.schedule_request,
                                     session_id.clone(),
                                     resume_id.clone(),
@@ -3062,6 +3131,7 @@ impl WorkspaceView {
                             if this.pending_schedule_delete.as_deref() == Some(delete_id.as_str()) {
                                 this.schedule_request += 1;
                                 this.engine.delete_schedule(
+                                    this.directory(),
                                     this.schedule_request,
                                     session_id.clone(),
                                     delete_id.clone(),
@@ -3116,7 +3186,7 @@ impl WorkspaceView {
                             .text_color(theme.warning)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if this.pending_plugin_update.as_deref() == Some(id.as_str()) {
-                                    this.engine.update_plugin(id.clone());
+                                    this.engine.update_plugin(this.directory(), id.clone());
                                     this.pending_plugin_update = None;
                                 } else {
                                     this.pending_plugin_update = Some(id.clone());
@@ -3184,7 +3254,7 @@ impl WorkspaceView {
                                     cx.notify();
                                     return;
                                 }
-                                this.engine.add_mcp(name, config);
+                                this.engine.add_mcp(this.directory(), name, config);
                                 this.mcp_add_open = false;
                                 cx.notify();
                             }))
@@ -3278,7 +3348,8 @@ impl WorkspaceView {
                             .id(SharedString::from(format!("mcp-connect-{name}")))
                             .text_color(theme.accent)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.engine.connect_mcp(connect_name.clone());
+                                this.engine
+                                    .connect_mcp(this.directory(), connect_name.clone());
                                 cx.notify();
                             }))
                             .child("Connect"),
@@ -3291,7 +3362,8 @@ impl WorkspaceView {
                             .id(SharedString::from(format!("mcp-disconnect-{name}")))
                             .text_color(theme.accent)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.engine.disconnect_mcp(disconnect_name.clone());
+                                this.engine
+                                    .disconnect_mcp(this.directory(), disconnect_name.clone());
                                 cx.notify();
                             }))
                             .child("Disconnect"),
@@ -3304,7 +3376,8 @@ impl WorkspaceView {
                         .text_color(if pending { theme.danger } else { theme.muted })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if this.pending_mcp_remove.as_deref() == Some(remove_name.as_str()) {
-                                this.engine.remove_mcp(remove_name.clone());
+                                this.engine
+                                    .remove_mcp(this.directory(), remove_name.clone());
                                 this.pending_mcp_remove = None;
                             } else {
                                 this.pending_mcp_remove = Some(remove_name.clone());
@@ -3369,7 +3442,8 @@ impl WorkspaceView {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if this.pending_saved_permission.as_deref() == Some(id.as_str())
                                     {
-                                        this.engine.delete_saved_permission(id.clone());
+                                        this.engine
+                                            .delete_saved_permission(this.directory(), id.clone());
                                         this.pending_saved_permission = None;
                                     } else {
                                         this.pending_saved_permission = Some(id.clone());
@@ -4189,7 +4263,8 @@ impl WorkspaceView {
                     .text_xs()
                     .bg(theme.warning)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.engine.commit_revert(session_id.clone());
+                        this.engine
+                            .commit_revert(this.directory(), session_id.clone());
                         cx.notify();
                     }))
                     .child("Revert"),
@@ -4203,7 +4278,8 @@ impl WorkspaceView {
                     .text_xs()
                     .text_color(theme.muted)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.engine.clear_revert(session_id.clone());
+                        this.engine
+                            .clear_revert(this.directory(), session_id.clone());
                         this.revert.clear();
                         cx.notify();
                     }))

@@ -1,30 +1,24 @@
 //! Session commands against the OpenCode `/api` surface.
 
-use std::path::Path;
 use std::time::Duration;
 
 use reqwest::{Client, Method, Response};
 
 /// Authenticated client for one sidecar instance.
 ///
-/// `directory` is canonicalized up front: OpenCode stores and filters location
-/// paths in canonical form (on macOS `/tmp` becomes `/private/tmp`), and a raw
-/// path would produce an empty session list.
+/// The API holds no project directory: every project-scoped request receives
+/// the canonical directory explicitly, so one sidecar can serve several
+/// projects without an implicit "current project".
 /// Cloning is cheap: the underlying HTTP client and strings are shared.
 #[derive(Clone)]
 pub(crate) struct SessionApi {
     pub(crate) client: Client,
     pub(crate) base_url: String,
     pub(crate) password: String,
-    pub(crate) directory: String,
 }
 
 impl SessionApi {
-    pub fn new(port: u16, password: String, project_dir: &Path) -> Result<Self, String> {
-        let directory = std::fs::canonicalize(project_dir)
-            .unwrap_or_else(|_| project_dir.to_path_buf())
-            .to_string_lossy()
-            .into_owned();
+    pub fn new(port: u16, password: String) -> Result<Self, String> {
         // No global timeout: the event stream is a long-lived response. Normal
         // requests set their own timeout below.
         let client = Client::builder()
@@ -34,7 +28,6 @@ impl SessionApi {
             client,
             base_url: format!("http://127.0.0.1:{port}"),
             password,
-            directory,
         })
     }
 

@@ -40,7 +40,7 @@ fn forks_before_the_second_user_message() {
     let deadline = Instant::now() + Duration::from_secs(90);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -50,6 +50,7 @@ fn forks_before_the_second_user_message() {
 
     for text in ["first", "second"] {
         assert!(started.engine.send_prompt(
+            &started.directory,
             &original,
             PromptRequest {
                 text: text.into(),
@@ -67,7 +68,11 @@ fn forks_before_the_second_user_message() {
     // Both user messages must be on the server before forking.
     let mut messages = Vec::new();
     for _ in 0..20 {
-        assert!(started.engine.load_transcript(&original));
+        assert!(
+            started
+                .engine
+                .load_transcript(&started.directory, &original)
+        );
         let EngineEvent::TranscriptLoaded {
             messages: loaded, ..
         } = support::wait_for(&events, deadline, |event| {
@@ -95,7 +100,11 @@ fn forks_before_the_second_user_message() {
         })
         .expect("second user message");
 
-    assert!(started.engine.fork_session(&original, Some(second)));
+    assert!(
+        started
+            .engine
+            .fork_session(&started.directory, &original, Some(second))
+    );
     let EngineEvent::SessionForked { session: forked } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::SessionForked { .. })
@@ -105,7 +114,11 @@ fn forks_before_the_second_user_message() {
     };
     assert_ne!(forked.id, original, "fork returned the original session");
 
-    assert!(started.engine.load_transcript(&forked.id));
+    assert!(
+        started
+            .engine
+            .load_transcript(&started.directory, &forked.id)
+    );
     let EngineEvent::TranscriptLoaded { messages, .. } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::TranscriptLoaded { .. })

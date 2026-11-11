@@ -27,7 +27,7 @@ fn lists_plugins_and_checks_for_updates() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.load_plugins(1));
+    assert!(started.engine.load_plugins(&started.directory, 1));
     let EngineEvent::PluginsLoaded { request_id, result } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::PluginsLoaded { .. })
@@ -42,7 +42,7 @@ fn lists_plugins_and_checks_for_updates() {
         let _ = plugin.status_label();
     }
 
-    assert!(started.engine.check_plugins(2));
+    assert!(started.engine.check_plugins(&started.directory, 2));
     let EngineEvent::PluginsChecked { request_id, result } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::PluginsChecked { .. })

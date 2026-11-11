@@ -26,7 +26,7 @@ fn load_status(
     request_id: u64,
     deadline: Instant,
 ) -> Option<McpStatus> {
-    assert!(started.engine.load_mcp(request_id));
+    assert!(started.engine.load_mcp(&started.directory, request_id));
     let EngineEvent::McpLoaded { result, .. } = support::wait_for(
         &started.events,
         deadline,
@@ -100,6 +100,7 @@ fn adds_connects_and_removes_an_mcp_server() {
 
     let command = env!("CARGO_BIN_EXE_mcp-echo");
     assert!(started.engine.add_mcp(
+        &started.directory,
         name.clone(),
         json!({ "type": "local", "command": [command] })
     ));
@@ -110,20 +111,24 @@ fn adds_connects_and_removes_an_mcp_server() {
     });
     assert_eq!(connected, McpStatus::Connected);
 
-    assert!(started.engine.disconnect_mcp(name.clone()));
+    assert!(
+        started
+            .engine
+            .disconnect_mcp(&started.directory, name.clone())
+    );
     wait_for_change(&started, &name, deadline);
     let disabled = wait_for_status(&started, &name, deadline, |status| {
         matches!(status, McpStatus::Disabled)
     });
     assert_eq!(disabled, McpStatus::Disabled);
 
-    assert!(started.engine.connect_mcp(name.clone()));
+    assert!(started.engine.connect_mcp(&started.directory, name.clone()));
     wait_for_change(&started, &name, deadline);
     wait_for_status(&started, &name, deadline, |status| {
         matches!(status, McpStatus::Connected)
     });
 
-    assert!(started.engine.remove_mcp(name.clone()));
+    assert!(started.engine.remove_mcp(&started.directory, name.clone()));
     wait_for_change(&started, &name, deadline);
     assert!(
         load_status(&started, &name, 2, deadline).is_none(),
@@ -133,7 +138,11 @@ fn adds_connects_and_removes_an_mcp_server() {
     // Removing a missing server must surface the server's error, not a
     // generic success.
     let missing = format!("{name}-missing");
-    assert!(started.engine.remove_mcp(missing.clone()));
+    assert!(
+        started
+            .engine
+            .remove_mcp(&started.directory, missing.clone())
+    );
     let EngineEvent::McpError {
         name: failed,
         message,

@@ -50,7 +50,7 @@ fn reverts_a_session_to_a_message() {
     let deadline = Instant::now() + Duration::from_secs(90);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.create_session());
+    assert!(started.engine.create_session(&started.directory,));
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     }) else {
@@ -60,6 +60,7 @@ fn reverts_a_session_to_a_message() {
 
     for text in ["first", "second"] {
         assert!(started.engine.send_prompt(
+            &started.directory,
             &id,
             PromptRequest {
                 text: text.into(),
@@ -76,7 +77,7 @@ fn reverts_a_session_to_a_message() {
 
     let mut messages = Vec::new();
     for _ in 0..20 {
-        assert!(started.engine.load_transcript(&id));
+        assert!(started.engine.load_transcript(&started.directory, &id));
         let EngineEvent::TranscriptLoaded {
             messages: loaded, ..
         } = support::wait_for(&events, deadline, |event| {
@@ -100,7 +101,11 @@ fn reverts_a_session_to_a_message() {
         })
         .expect("second user message");
 
-    assert!(started.engine.stage_revert(&id, second, Some(false)));
+    assert!(
+        started
+            .engine
+            .stage_revert(&started.directory, &id, second, Some(false))
+    );
     let EngineEvent::RevertStaged { revert, .. } = support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::RevertStaged { .. })
     }) else {
@@ -109,14 +114,14 @@ fn reverts_a_session_to_a_message() {
     assert!(revert.files.is_empty(), "files:false staged files");
     assert!(!revert.message_id.is_empty());
 
-    assert!(started.engine.commit_revert(&id));
+    assert!(started.engine.commit_revert(&started.directory, &id));
     support::wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::RevertCommitted { .. })
     });
 
     let mut after = Vec::new();
     for _ in 0..20 {
-        assert!(started.engine.load_transcript(&id));
+        assert!(started.engine.load_transcript(&started.directory, &id));
         let EngineEvent::TranscriptLoaded {
             messages: loaded, ..
         } = support::wait_for(&events, deadline, |event| {

@@ -27,7 +27,7 @@ fn loads_usage_limits_or_reports_them_unavailable() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.load_usage_limits(1));
+    assert!(started.engine.load_usage_limits(&started.directory, 1));
     let EngineEvent::UsageLimitsLoaded { request_id, result } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::UsageLimitsLoaded { .. })

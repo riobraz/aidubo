@@ -6,16 +6,17 @@ use reqwest::Method;
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
 impl SessionApi {
-    /// Working-tree, branch, or committed diff for the project.
+    /// Working-tree, branch, or committed diff for `directory`.
     pub async fn vcs_diff(
         &self,
+        directory: &str,
         mode: &str,
         base: Option<&str>,
         context: Option<&str>,
         untracked: &str,
     ) -> Result<Vec<FileDiff>, String> {
         let mut query: Vec<(&str, &str)> = vec![
-            ("location[directory]", self.directory.as_str()),
+            ("location[directory]", directory),
             ("mode", mode),
             ("untracked", untracked),
         ];

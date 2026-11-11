@@ -30,13 +30,17 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    /// Import an export into this project. `info` and `messages` are sent
-    /// untouched; only the location is replaced with this project's directory.
-    pub async fn import_session(&self, transfer: &SessionTransfer) -> Result<Session, String> {
+    /// Import an export into `directory`. `info` and `messages` are sent
+    /// untouched; only the location is replaced with the project's directory.
+    pub async fn import_session(
+        &self,
+        directory: &str,
+        transfer: &SessionTransfer,
+    ) -> Result<Session, String> {
         let body = serde_json::json!({
             "info": transfer.info,
             "messages": transfer.messages,
-            "location": { "directory": self.directory },
+            "location": { "directory": directory },
         });
         let response = self
             .request(Method::POST, "/api/experimental/session/import")
@@ -93,7 +97,7 @@ mod tests {
     use harness_protocol::{SessionTransfer, StatsRange};
     use serde_json::json;
 
-    use super::{SessionApi, import_as_copy};
+    use super::import_as_copy;
 
     #[test]
     fn stats_query_uses_epoch_milliseconds() {
@@ -138,12 +142,5 @@ mod tests {
         assert_ne!(copied.messages[1]["id"], "msg_2");
         assert_ne!(copied.messages[0]["id"], copied.messages[1]["id"]);
         assert_eq!(copied.message_count(), 2);
-    }
-
-    #[test]
-    fn session_api_directory_is_canonical() {
-        // Guards the query value that location-scoped endpoints read.
-        let api = SessionApi::new(1, "pass".into(), std::path::Path::new("/tmp")).expect("api");
-        assert!(api.directory.ends_with("tmp"));
     }
 }

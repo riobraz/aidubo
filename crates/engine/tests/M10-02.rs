@@ -69,9 +69,14 @@ fn loads_the_working_tree_diff_from_a_real_repository() {
 
         let request_id = attempt + 1;
         assert!(
-            started
-                .engine
-                .load_vcs_diff(request_id, "working", None, None, "files"),
+            started.engine.load_vcs_diff(
+                &started.directory,
+                request_id,
+                "working",
+                None,
+                None,
+                "files"
+            ),
             "engine stopped before the diff request"
         );
         let EngineEvent::VcsDiffLoaded {

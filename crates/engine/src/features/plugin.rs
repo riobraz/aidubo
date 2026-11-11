@@ -6,10 +6,10 @@ use reqwest::Method;
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
 impl SessionApi {
-    pub async fn plugins(&self) -> Result<Vec<PluginInfo>, String> {
+    pub async fn plugins(&self, directory: &str) -> Result<Vec<PluginInfo>, String> {
         let response = self
             .request(Method::GET, "/api/plugin")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -18,10 +18,14 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn update_plugins(&self, targets: Vec<String>) -> Result<(), String> {
+    pub async fn update_plugins(
+        &self,
+        directory: &str,
+        targets: Vec<String>,
+    ) -> Result<(), String> {
         let response = self
             .request(Method::POST, "/api/plugin/update")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .json(&serde_json::json!({ "targets": targets }))
             .send()
             .await

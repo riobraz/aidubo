@@ -27,7 +27,7 @@ fn lists_providers_and_integrations() {
     let deadline = Instant::now() + Duration::from_secs(60);
     support::wait_for_stream(&events, deadline);
 
-    assert!(started.engine.load_providers(1));
+    assert!(started.engine.load_providers(&started.directory, 1));
     let EngineEvent::ProvidersLoaded { result, .. } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::ProvidersLoaded { .. })
@@ -38,7 +38,7 @@ fn lists_providers_and_integrations() {
     let providers = result.expect("provider list failed");
     assert!(providers.iter().any(|provider| provider.id == "mock"));
 
-    assert!(started.engine.load_integrations(2));
+    assert!(started.engine.load_integrations(&started.directory, 2));
     let EngineEvent::IntegrationsLoaded { result, .. } =
         support::wait_for(&events, deadline, |event| {
             matches!(event, EngineEvent::IntegrationsLoaded { .. })
@@ -54,7 +54,11 @@ fn lists_providers_and_integrations() {
     // A credential sent to a missing integration must come back as a short
     // error that never echoes the key.
     let secret = "sk-e2e-abcdef1234567890abcdef1234567890";
-    assert!(started.engine.send_key("definitely-missing", secret));
+    assert!(
+        started
+            .engine
+            .send_key(&started.directory, "definitely-missing", secret)
+    );
     let EngineEvent::AuthAttemptFailed {
         integration_id,
         message,
@@ -79,7 +83,7 @@ fn lists_providers_and_integrations() {
     assert!(
         started
             .engine
-            .cancel_oauth("definitely-missing", "att_missing")
+            .cancel_oauth(&started.directory, "definitely-missing", "att_missing")
     );
     let cancelled = support::wait_for(&events, deadline, |event| {
         matches!(

@@ -67,14 +67,18 @@ impl SessionApi {
         path
     }
 
-    fn located(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        request.query(&[("location[directory]", self.directory.as_str())])
+    fn located(
+        &self,
+        request: reqwest::RequestBuilder,
+        directory: &str,
+    ) -> reqwest::RequestBuilder {
+        request.query(&[("location[directory]", directory)])
     }
 
-    pub async fn providers(&self) -> Result<Vec<ProviderInfo>, String> {
+    pub async fn providers(&self, directory: &str) -> Result<Vec<ProviderInfo>, String> {
         let response = self
             .request(Method::GET, "/api/provider")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -83,10 +87,10 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn integrations(&self) -> Result<Vec<IntegrationInfo>, String> {
+    pub async fn integrations(&self, directory: &str) -> Result<Vec<IntegrationInfo>, String> {
         let response = self
             .request(Method::GET, "/api/integration")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -97,12 +101,13 @@ impl SessionApi {
 
     pub async fn start_oauth(
         &self,
+        directory: &str,
         integration_id: &str,
         method_id: &str,
     ) -> Result<OAuthAttempt, String> {
         let path = self.integration_path(&[integration_id, "connect", "oauth"]);
         let response = self
-            .located(self.request(Method::POST, &path))
+            .located(self.request(Method::POST, &path), directory)
             .json(&OAuthStartRequest {
                 method_id: method_id.to_string(),
                 label: None,
@@ -117,12 +122,13 @@ impl SessionApi {
 
     pub async fn oauth_status(
         &self,
+        directory: &str,
         integration_id: &str,
         attempt_id: &str,
     ) -> Result<AttemptStatus, String> {
         let path = self.integration_path(&[integration_id, "connect", "oauth", attempt_id]);
         let response = self
-            .located(self.request(Method::GET, &path))
+            .located(self.request(Method::GET, &path), directory)
             .send()
             .await
             .map_err(network_error)?;
@@ -131,10 +137,15 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn cancel_oauth(&self, integration_id: &str, attempt_id: &str) -> Result<(), String> {
+    pub async fn cancel_oauth(
+        &self,
+        directory: &str,
+        integration_id: &str,
+        attempt_id: &str,
+    ) -> Result<(), String> {
         let path = self.integration_path(&[integration_id, "connect", "oauth", attempt_id]);
         let response = self
-            .located(self.request(Method::DELETE, &path))
+            .located(self.request(Method::DELETE, &path), directory)
             .send()
             .await
             .map_err(network_error)?;
@@ -143,6 +154,7 @@ impl SessionApi {
 
     pub async fn complete_oauth(
         &self,
+        directory: &str,
         integration_id: &str,
         attempt_id: &str,
         code: Option<String>,
@@ -150,7 +162,7 @@ impl SessionApi {
         let path =
             self.integration_path(&[integration_id, "connect", "oauth", attempt_id, "complete"]);
         let response = self
-            .located(self.request(Method::POST, &path))
+            .located(self.request(Method::POST, &path), directory)
             .json(&OAuthCompleteRequest { code })
             .send()
             .await
@@ -160,12 +172,13 @@ impl SessionApi {
 
     pub async fn start_command(
         &self,
+        directory: &str,
         integration_id: &str,
         method_id: &str,
     ) -> Result<CommandAttempt, String> {
         let path = self.integration_path(&[integration_id, "connect", "command"]);
         let response = self
-            .located(self.request(Method::POST, &path))
+            .located(self.request(Method::POST, &path), directory)
             .json(&CommandStartRequest {
                 method_id: method_id.to_string(),
                 label: None,
@@ -180,12 +193,13 @@ impl SessionApi {
 
     pub async fn command_status(
         &self,
+        directory: &str,
         integration_id: &str,
         attempt_id: &str,
     ) -> Result<AttemptStatus, String> {
         let path = self.integration_path(&[integration_id, "connect", "command", attempt_id]);
         let response = self
-            .located(self.request(Method::GET, &path))
+            .located(self.request(Method::GET, &path), directory)
             .send()
             .await
             .map_err(network_error)?;
@@ -196,22 +210,28 @@ impl SessionApi {
 
     pub async fn cancel_command(
         &self,
+        directory: &str,
         integration_id: &str,
         attempt_id: &str,
     ) -> Result<(), String> {
         let path = self.integration_path(&[integration_id, "connect", "command", attempt_id]);
         let response = self
-            .located(self.request(Method::DELETE, &path))
+            .located(self.request(Method::DELETE, &path), directory)
             .send()
             .await
             .map_err(network_error)?;
         ensure_success(response).await.map(|_| ())
     }
 
-    pub async fn send_key(&self, integration_id: &str, key: &Secret) -> Result<(), String> {
+    pub async fn send_key(
+        &self,
+        directory: &str,
+        integration_id: &str,
+        key: &Secret,
+    ) -> Result<(), String> {
         let path = self.integration_path(&[integration_id, "connect", "key"]);
         let response = self
-            .located(self.request(Method::POST, &path))
+            .located(self.request(Method::POST, &path), directory)
             .json(&SendKeyRequest {
                 key: key.expose().to_string(),
                 label: None,
@@ -229,12 +249,13 @@ impl SessionApi {
 
     pub async fn connect_external(
         &self,
+        directory: &str,
         integration_id: &str,
         method_id: &str,
     ) -> Result<(), String> {
         let path = self.integration_path(&[integration_id, "connect", "external"]);
         let response = self
-            .located(self.request(Method::POST, &path))
+            .located(self.request(Method::POST, &path), directory)
             .json(&ExternalStartRequest {
                 method_id: method_id.to_string(),
                 label: None,

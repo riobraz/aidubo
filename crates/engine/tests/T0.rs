@@ -102,7 +102,7 @@ fn engine_streams_from_the_scripted_provider() {
     support::wait_for_stream(&events, deadline);
 
     assert!(
-        started.engine.create_session(),
+        started.engine.create_session(&started.directory,),
         "engine stopped before create"
     );
     let EngineEvent::SessionCreated { session } = support::wait_for(&events, deadline, |event| {
@@ -113,6 +113,7 @@ fn engine_streams_from_the_scripted_provider() {
 
     assert!(
         started.engine.send_prompt(
+            &started.directory,
             &session.id,
             PromptRequest {
                 text: "hi".into(),

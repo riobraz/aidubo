@@ -27,10 +27,14 @@ const TICKET_HEADER: &str = "x-opencode-ticket";
 const NOT_CONNECTED: &str = "The terminal is not connected.";
 
 impl SessionApi {
-    pub async fn create_pty(&self, request: CreatePtyRequest) -> Result<PtyProcess, String> {
+    pub async fn create_pty(
+        &self,
+        directory: &str,
+        request: CreatePtyRequest,
+    ) -> Result<PtyProcess, String> {
         let response = self
             .request(Method::POST, "/api/pty")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .json(&request)
             .send()
             .await
@@ -40,10 +44,10 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn ptys(&self) -> Result<Vec<PtyProcess>, String> {
+    pub async fn ptys(&self, directory: &str) -> Result<Vec<PtyProcess>, String> {
         let response = self
             .request(Method::GET, "/api/pty")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -52,10 +56,16 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn resize_pty(&self, id: &str, cols: u16, rows: u16) -> Result<PtyProcess, String> {
+    pub async fn resize_pty(
+        &self,
+        directory: &str,
+        id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PtyProcess, String> {
         let response = self
             .request(Method::PUT, &format!("/api/pty/{id}"))
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .json(&serde_json::json!({ "size": { "rows": rows, "cols": cols } }))
             .send()
             .await
@@ -65,10 +75,10 @@ impl SessionApi {
         Ok(page.data)
     }
 
-    pub async fn delete_pty(&self, id: &str) -> Result<(), String> {
+    pub async fn delete_pty(&self, directory: &str, id: &str) -> Result<(), String> {
         let response = self
             .request(Method::DELETE, &format!("/api/pty/{id}"))
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
@@ -78,10 +88,10 @@ impl SessionApi {
 
     /// Tickets are single-use and expire after about a minute; request one
     /// immediately before opening the socket.
-    pub async fn pty_ticket(&self, id: &str) -> Result<PtyTicket, String> {
+    pub async fn pty_ticket(&self, directory: &str, id: &str) -> Result<PtyTicket, String> {
         let response = self
             .request(Method::POST, &format!("/api/pty/{id}/connect-token"))
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .header(TICKET_HEADER, "1")
             .send()
             .await
@@ -95,6 +105,7 @@ impl SessionApi {
     /// logged or included in an error message.
     pub(crate) fn pty_connect_url(
         &self,
+        directory: &str,
         id: &str,
         ticket: &str,
         cursor: Option<u64>,
@@ -108,7 +119,7 @@ impl SessionApi {
             if let Some(cursor) = cursor {
                 query.append_pair("cursor", &cursor.to_string());
             }
-            query.append_pair("location[directory]", &self.directory);
+            query.append_pair("location[directory]", directory);
         }
         Ok(url.to_string())
     }

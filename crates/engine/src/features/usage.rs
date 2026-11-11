@@ -7,10 +7,10 @@ use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
 impl SessionApi {
     /// Limits are optional: a 503 means "not available for this workspace".
-    pub async fn usage_limits(&self) -> Result<Option<UsageLimits>, String> {
+    pub async fn usage_limits(&self, directory: &str) -> Result<Option<UsageLimits>, String> {
         let response = self
             .request(Method::GET, "/api/experimental/usage/limits")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[("location[directory]", directory)])
             .send()
             .await
             .map_err(network_error)?;
