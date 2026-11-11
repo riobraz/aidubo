@@ -321,8 +321,8 @@
       "deps": [
         "T0"
       ],
-      "e2e": "tests/M16-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "e2e": "tests/M16-03.rs",
+      "status": "done"
     },
     {
       "id": "M16-04",

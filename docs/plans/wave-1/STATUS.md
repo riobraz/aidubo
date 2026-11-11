@@ -6,6 +6,26 @@ Last updated: 2026-11-11
 
 ## Completed
 
+- 2026-11-11 — **M16-03 done.** Session export, import, and stats. Live
+  contract against opencode v2.2.7: export returns `{data: {info, messages}}`
+  and sanitize rewrites the title to `[redacted:session-title:<id>]` (so a
+  title-preserving round trip must use `sanitize: false`); stats takes epoch
+  milliseconds (`from`/`to`) and is global, not project-scoped; import is
+  `POST .../session/import` with `{info, messages, location}`. Import
+  conflicts: the same session id is a 409 `ConflictError`, but message ids are
+  a global namespace, so a fresh session id with the original message ids is a
+  500 — copy mode rewrites both, and the UI toggle defaults on. The protocol
+  keeps `info`/`messages` as raw JSON so a round trip cannot drop fields the
+  typed transcript types do not model. The engine writes the export file
+  (views are IO-free). UI: Export… with sanitize and a save dialog, Import…
+  with a preview and copy toggle, and a Stats modal with 7-day/30-day/all-time
+  presets, totals, tokens, and per-model rows. The e2e runs a real turn,
+  asserts the sanitized file has no `sk-`, `Bearer `, or `Authorization` and
+  no title, imports a plain export into a second project and proves the
+  message count and title survived through `GET /message`, then proves a
+  non-copy import of the same id is refused with no side effect, checks
+  all-time stats, and cleans up.
+
 - 2026-11-11 — **M13-01 done.** Live probe against opencode v2.2.7 showed the
   add endpoint requires `{"config": {...}}` (the inner local/remote config),
   returns 204, and that connect/disconnect/remove are 204 with a 404
@@ -228,18 +248,43 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M13-01 and M14-01 are complete. Next: M16-01…03, M11-01, M15-01.
+- M13-01, M14-01 and M16-03 are complete. Next: M16-02, M16-01, M11-01,
+  M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
 
-None technical. Remaining work is volume: 15 of the 21 wave-1 spec nodes are
+None technical. Remaining work is volume: 16 of the 21 wave-1 spec nodes are
 done in the graph; M14-02/M14-03 and other later-wave nodes depend on this
 transport.
 
 ## Verification
 
-Per node. M13-01:
+Per node. M16-03:
+
+```sh
+cargo test -p harness-protocol -p harness-core -p harness-engine --lib
+                                                        58 + 99 + 33 passed
+cargo test -p harness-views                             12 passed
+cargo test -p harness-engine --test M16-03 -- --nocapture
+                                                        1 passed (9.63 s)
+cargo test --workspace                                  all passed
+cargo clippy --workspace --all-targets -- -D warnings   clean
+cargo fmt --all -- --check                              clean
+```
+
+The M16-03 e2e ran against opencode v2.2.7 with the mock provider: one turn
+stored three transcript messages; the sanitized export contained no secret
+substring and no title; the plain export kept the title and its message count;
+the copy import into a second project matched that count through the server's
+transcript endpoint; a non-copy import of the same file returned the 409
+conflict and left the project with exactly one session; all-time stats reported
+the turn; both sessions were deleted and both sidecars stopped. One workspace
+run saw `M13-02` fail at `providers` discovery; it passed on immediate rerun
+and again in the following full workspace run, so it is a timing flake in an
+unrelated node, not a regression from M16-03.
+
+M13-01:
 
 ```sh
 cargo test -p harness-protocol -p harness-core -p harness-engine --lib

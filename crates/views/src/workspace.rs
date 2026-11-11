@@ -16,8 +16,9 @@ use harness_core::{
     NotifyPolicy, NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
     PickerKind, PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
     SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus, TranscriptStore,
-    UsageStore, VcsStore, describe_when, failure_reason, flatten, next_run_label, now_ms,
-    parse_patch, path_to_file_uri, relative_time, url_host, validate_duration, visible_range,
+    TransferStore, UsageStore, VcsStore, describe_when, failure_reason, flatten, import_error,
+    next_run_label, now_ms, parse_patch, path_to_file_uri, relative_time, url_host,
+    validate_duration, validate_import, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -28,6 +29,9 @@ use harness_protocol::{
 use harness_ui::{Theme, attachment_chip, status_dot};
 
 use crate::notify::NotifyChannels;
+use crate::transfer::{
+    ImportFile, StatsPreset, TransferState, compact_count, money, token_summary,
+};
 
 /// Server-backed lists the composer pickers filter locally.
 #[derive(Debug, Default)]
@@ -162,6 +166,9 @@ pub struct WorkspaceView {
     providers: ProviderStore,
     provider_dialog: Option<ProviderDialog>,
     provider_key: Entity<InputState>,
+    transfer: TransferState,
+    transfer_store: TransferStore,
+    stats_request: u64,
     schedules: ScheduleStore,
     schedules_session: Option<String>,
     show_finished_schedules: bool,
@@ -363,6 +370,9 @@ impl WorkspaceView {
             providers: ProviderStore::default(),
             provider_dialog: None,
             provider_key,
+            transfer: TransferState::default(),
+            transfer_store: TransferStore::default(),
+            stats_request: 0,
             schedules: ScheduleStore::default(),
             schedules_session: None,
             show_finished_schedules: false,
@@ -650,6 +660,73 @@ impl WorkspaceView {
                 self.renaming = None;
                 self.error = None;
                 self.follow_selection();
+            }
+            EngineEvent::SessionExported {
+                session_id,
+                path,
+                bytes,
+            } => {
+                self.transfer.exporting = false;
+                self.transfer.export_notice =
+                    Some(format!("Saved {bytes} bytes to {}.", path.display()));
+                self.transfer_store.record_export(session_id, path, bytes);
+                self.error = None;
+            }
+            EngineEvent::SessionExportError { message } => {
+                self.transfer.exporting = false;
+                self.error = Some(message);
+            }
+            EngineEvent::ImportPreviewed { path, transfer } => match validate_import(&transfer) {
+                Ok(preview) => {
+                    self.error = None;
+                    self.transfer.import_preview = Some(ImportFile { path, preview });
+                }
+                Err(message) => {
+                    self.transfer.importing = false;
+                    self.error = Some(message);
+                }
+            },
+            EngineEvent::SessionImported { session } => {
+                self.transfer.importing = false;
+                if let Some(file) = self.transfer.import_preview.take() {
+                    self.transfer_store.record_import(file.preview);
+                }
+                self.apply_session_usage(&session);
+                let id = session.id.clone();
+                self.sessions.upsert(session);
+                self.sessions.select(&id);
+                self.error = None;
+                self.transcript.begin(&id);
+                self.engine.load_transcript(id.clone());
+                self.permissions.begin(&id);
+                self.engine.load_permissions(id.clone());
+                self.inbox.begin(&id);
+                self.engine.load_inbox(id.clone());
+                self.engine.load_forms(id.clone());
+                self.reset_schedules(&id);
+                self.engine.refresh_sessions();
+            }
+            EngineEvent::SessionImportError { message } => {
+                self.transfer.importing = false;
+                self.error = Some(match &self.transfer.import_preview {
+                    Some(file) => import_error(&message, &file.preview),
+                    None => message,
+                });
+            }
+            EngineEvent::StatsLoaded { request_id, result } => {
+                if request_id != self.stats_request {
+                    return;
+                }
+                self.transfer.stats_loading = false;
+                match result {
+                    Ok(stats) => {
+                        self.transfer_store.cache_stats(stats);
+                        self.error = None;
+                    }
+                    Err(message) => {
+                        self.error = Some(format!("Could not load statistics: {message}"));
+                    }
+                }
             }
             EngineEvent::TranscriptLoaded {
                 session_id,
@@ -1562,6 +1639,165 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    fn begin_export(&mut self, cx: &mut Context<Self>) {
+        if self.sessions.selected().is_none() {
+            return;
+        }
+        self.transfer.export_open = true;
+        self.transfer.export_notice = None;
+        self.transfer.exporting = false;
+        self.renaming = None;
+        self.pending_delete = None;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn cancel_export(&mut self, cx: &mut Context<Self>) {
+        self.transfer.export_open = false;
+        self.transfer.export_notice = None;
+        cx.notify();
+    }
+
+    fn toggle_sanitize(&mut self, cx: &mut Context<Self>) {
+        self.transfer.sanitize = !self.transfer.sanitize;
+        cx.notify();
+    }
+
+    fn choose_export_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.sessions.selected_id().map(str::to_owned) else {
+            return;
+        };
+        let suggested = format!("session-{id}.json");
+        let receiver = cx.prompt_for_new_path(&self.project_dir, Some(&suggested));
+        self.error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = receiver.await;
+            if this
+                .update(cx, |this, cx| {
+                    match picked {
+                        Ok(Ok(Some(path))) => {
+                            if this.engine.export_session(id, this.transfer.sanitize, path) {
+                                this.transfer.exporting = true;
+                            } else {
+                                this.error = Some("The engine is not running.".into());
+                            }
+                        }
+                        Ok(Ok(None)) => {}
+                        Ok(Err(error)) => {
+                            this.error = Some(format!("Could not open the save dialog: {error}"));
+                        }
+                        Err(_) => {
+                            this.error = Some("The save dialog closed unexpectedly.".into());
+                        }
+                    }
+                    cx.notify();
+                })
+                .is_err()
+            {
+                // The window closed while the save dialog was open.
+            }
+        })
+        .detach();
+    }
+
+    fn begin_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(SharedString::from("Import session export")),
+        });
+        self.transfer.import_preview = None;
+        self.transfer.import_as_copy = true;
+        self.error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = receiver.await;
+            if this
+                .update(cx, |this, cx| {
+                    match picked {
+                        Ok(Ok(Some(paths))) => {
+                            if let Some(path) = paths.into_iter().next()
+                                && !this.engine.preview_import(path)
+                            {
+                                this.error = Some("The engine is not running.".into());
+                            }
+                        }
+                        Ok(Ok(None)) => {}
+                        Ok(Err(error)) => {
+                            this.error = Some(format!("Could not open the file dialog: {error}"));
+                        }
+                        Err(_) => {
+                            this.error = Some("The file dialog closed unexpectedly.".into());
+                        }
+                    }
+                    cx.notify();
+                })
+                .is_err()
+            {
+                // The window closed while the file dialog was open.
+            }
+        })
+        .detach();
+    }
+
+    fn confirm_import(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.transfer.import_preview.as_ref() else {
+            return;
+        };
+        let path = file.path.clone();
+        self.transfer.importing = true;
+        self.error = None;
+        if !self
+            .engine
+            .import_session(path, self.transfer.import_as_copy)
+        {
+            self.transfer.importing = false;
+            self.error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn toggle_import_copy(&mut self, cx: &mut Context<Self>) {
+        self.transfer.import_as_copy = !self.transfer.import_as_copy;
+        cx.notify();
+    }
+
+    fn cancel_import(&mut self, cx: &mut Context<Self>) {
+        self.transfer.import_preview = None;
+        self.transfer.importing = false;
+        cx.notify();
+    }
+
+    fn open_stats(&mut self, cx: &mut Context<Self>) {
+        self.transfer.stats_open = true;
+        self.load_stats(cx);
+    }
+
+    fn close_stats(&mut self, cx: &mut Context<Self>) {
+        self.transfer.stats_open = false;
+        self.transfer.stats_loading = false;
+        cx.notify();
+    }
+
+    fn choose_stats_preset(&mut self, preset: StatsPreset, cx: &mut Context<Self>) {
+        self.transfer.stats_preset = preset;
+        self.load_stats(cx);
+    }
+
+    fn load_stats(&mut self, cx: &mut Context<Self>) {
+        let range = self.transfer.range(now_ms());
+        self.stats_request = self.stats_request.wrapping_add(1);
+        self.transfer.stats_loading = true;
+        self.error = None;
+        if !self.engine.load_stats(self.stats_request, range) {
+            self.transfer.stats_loading = false;
+            self.error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
     fn dismiss_error(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         cx.notify();
@@ -1665,10 +1901,17 @@ impl WorkspaceView {
         let had_overlay = self.renaming.is_some()
             || self.pending_delete.is_some()
             || self.error.is_some()
-            || self.picker.is_some();
+            || self.picker.is_some()
+            || self.transfer.export_open
+            || self.transfer.import_preview.is_some()
+            || self.transfer.stats_open;
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
+        self.transfer.export_open = false;
+        self.transfer.export_notice = None;
+        self.transfer.import_preview = None;
+        self.transfer.stats_open = false;
         self.close_picker();
         if had_overlay {
             cx.notify();
@@ -3300,6 +3543,16 @@ impl WorkspaceView {
                     )
                     .child(div().flex_1())
                     .child(
+                        Button::new("import-session")
+                            .small()
+                            .ghost()
+                            .label("Import…")
+                            .disabled(!ready)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.begin_import(window, cx)),
+                            ),
+                    )
+                    .child(
                         Button::new("theme-toggle")
                             .small()
                             .ghost()
@@ -3408,9 +3661,17 @@ impl WorkspaceView {
             main = main.child(self.reconnect_banner(theme));
         }
 
-        if let Some(session) = self.sessions.selected() {
+        if self.transfer.stats_open {
+            main = main.child(self.stats_pane(theme, cx));
+        } else if let Some(session) = self.sessions.selected() {
+            if let Some(file) = &self.transfer.import_preview {
+                main = main.child(self.import_panel(file, theme, cx));
+            }
             main = main.child(self.selected_pane(session, theme, cx));
         } else {
+            if let Some(file) = &self.transfer.import_preview {
+                main = main.child(self.import_panel(file, theme, cx));
+            }
             main = main.child(self.empty_pane(theme, cx));
         }
 
@@ -3561,6 +3822,20 @@ impl WorkspaceView {
                     ),
             )
             .child(
+                Button::new("export-session")
+                    .small()
+                    .ghost()
+                    .label("Export…")
+                    .on_click(cx.listener(|this, _, _, cx| this.begin_export(cx))),
+            )
+            .child(
+                Button::new("session-stats")
+                    .small()
+                    .ghost()
+                    .label("Stats")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_stats(cx))),
+            )
+            .child(
                 Button::new("rename-session")
                     .small()
                     .ghost()
@@ -3583,6 +3858,10 @@ impl WorkspaceView {
 
         if let Some(input) = &self.renaming {
             pane = pane.child(self.rename_panel(input, theme, cx));
+        }
+
+        if self.transfer.export_open {
+            pane = pane.child(self.export_panel(theme, cx));
         }
 
         let mut pane = pane.child(self.transcript_pane(theme, cx));
@@ -4296,6 +4575,327 @@ impl WorkspaceView {
             self.draft.clear_command();
         }
         cx.notify();
+    }
+
+    fn export_panel(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let sanitize = self.transfer.sanitize;
+        let exporting = self.transfer.exporting;
+        let notice = self.transfer.export_notice.clone();
+
+        let mut panel = div()
+            .mx_6()
+            .mt_4()
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_sm().child("Export session"))
+            .child(div().text_xs().text_color(theme.muted).child(
+                "The file contains this session's messages. Sanitizing redacts titles, \
+                         directories, and secrets before the file is written.",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("toggle-sanitize")
+                            .small()
+                            .ghost()
+                            .label(if sanitize {
+                                "Sanitize secrets: On"
+                            } else {
+                                "Sanitize secrets: Off"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sanitize(cx))),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("choose-export-path")
+                            .small()
+                            .primary()
+                            .label(if exporting {
+                                "Exporting…"
+                            } else {
+                                "Choose file…"
+                            })
+                            .disabled(exporting)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_export_path(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("cancel-export")
+                            .small()
+                            .ghost()
+                            .label("Close")
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_export(cx))),
+                    ),
+            );
+
+        if let Some(notice) = notice {
+            panel = panel.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.success)
+                    .child(notice),
+            );
+        }
+
+        panel
+    }
+
+    fn import_panel(
+        &self,
+        file: &ImportFile,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let preview = &file.preview;
+        let importing = self.transfer.importing;
+        let as_copy = self.transfer.import_as_copy;
+        let from_elsewhere = preview.project.as_deref().is_some_and(|project| {
+            !project.starts_with("[redacted")
+                && project != self.project_dir.to_string_lossy().as_ref()
+        });
+
+        let mut panel =
+            div()
+                .mx_6()
+                .mt_4()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.accent)
+                .bg(theme.surface)
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().text_sm().child("Import session"))
+                        .child(
+                            Button::new("cancel-import")
+                                .small()
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_import(cx))),
+                        )
+                        .child(
+                            Button::new("confirm-import")
+                                .small()
+                                .primary()
+                                .label(if importing { "Importing…" } else { "Import" })
+                                .disabled(importing)
+                                .on_click(cx.listener(|this, _, _, cx| this.confirm_import(cx))),
+                        ),
+                )
+                .child(div().text_lg().child(preview.title.clone()))
+                .child(div().text_xs().text_color(theme.muted).child(format!(
+                    "{} messages · {} · {}",
+                    preview.message_count,
+                    preview.project.as_deref().unwrap_or("unknown project"),
+                    preview.session_id
+                )))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("toggle-import-copy")
+                                .small()
+                                .ghost()
+                                .label(if as_copy {
+                                    "Import as a copy: On"
+                                } else {
+                                    "Import as a copy: Off"
+                                })
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.toggle_import_copy(cx)),
+                                ),
+                        )
+                        .child(div().flex_1().text_xs().text_color(theme.muted).child(
+                            if as_copy {
+                                "New session and message ids; the original stays untouched."
+                            } else {
+                                "Keeps the exported ids; refused if the session already exists."
+                            },
+                        )),
+                );
+
+        if from_elsewhere {
+            panel = panel.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.warning)
+                    .child("This export came from a different project."),
+            );
+        }
+
+        panel
+    }
+
+    fn stats_pane(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let range = self.transfer.range(now_ms());
+        let stats = self.transfer_store.stats(range).cloned();
+        let has_stats = stats.is_some();
+        let loading = self.transfer.stats_loading;
+        let preset = self.transfer.stats_preset;
+
+        let mut pane = div()
+            .id("stats-pane")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_6()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_xl().child("Statistics"))
+                    .child(div().flex_1())
+                    .children(StatsPreset::ALL.into_iter().map(|option| {
+                        Button::new(SharedString::from(format!(
+                            "stats-preset-{}",
+                            option.label()
+                        )))
+                        .small()
+                        .ghost()
+                        .label(if option == preset {
+                            format!("{} ✓", option.label())
+                        } else {
+                            option.label().to_string()
+                        })
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.choose_stats_preset(option, cx)),
+                        )
+                    }))
+                    .child(
+                        Button::new("close-stats")
+                            .small()
+                            .ghost()
+                            .label("Close")
+                            .on_click(cx.listener(|this, _, _, cx| this.close_stats(cx))),
+                    ),
+            )
+            .child(div().text_xs().text_color(theme.muted).child(
+                "Totals cover every session in the server's storage, not only this project.",
+            ));
+
+        if loading && stats.is_none() {
+            pane = pane.child(div().text_sm().text_color(theme.muted).child("Loading…"));
+        }
+
+        if let Some(stats) = stats {
+            if stats.is_empty() {
+                pane = pane.child(
+                    div()
+                        .text_sm()
+                        .text_color(theme.muted)
+                        .child("No activity in this range."),
+                );
+            } else {
+                let tile = |label: &'static str, value: String| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .min_w(px(110.))
+                        .child(div().text_xs().text_color(theme.muted).child(label))
+                        .child(div().text_lg().child(value))
+                };
+                pane = pane
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_4()
+                            .child(tile("Sessions", compact_count(stats.sessions as f64)))
+                            .child(tile("Prompts", compact_count(stats.prompts as f64)))
+                            .child(tile("Steps", compact_count(stats.steps as f64)))
+                            .child(tile("Active days", compact_count(stats.active_days as f64)))
+                            .child(tile("Streak", compact_count(stats.streak as f64)))
+                            .child(tile("Cost", money(stats.cost))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child(token_summary(stats.tokens)),
+                    );
+
+                let mut models = div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_xs().text_color(theme.muted).child("Per model"));
+                if stats.models.is_empty() {
+                    models = models.child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.muted)
+                            .child("No model activity in this range."),
+                    );
+                }
+                for model in &stats.models {
+                    models = models.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(model.label()),
+                            )
+                            .child(div().text_xs().text_color(theme.muted).child(format!(
+                                "{} steps · {} · {}",
+                                compact_count(model.steps as f64),
+                                compact_count(
+                                    model.tokens.input
+                                        + model.tokens.output
+                                        + model.tokens.reasoning
+                                        + model.tokens.cache.read
+                                        + model.tokens.cache.write
+                                ),
+                                money(model.cost)
+                            ))),
+                    );
+                }
+                pane = pane.child(models);
+            }
+        } else if !loading {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted)
+                    .child("No statistics available."),
+            );
+        }
+
+        if loading && has_stats {
+            pane = pane.child(div().text_xs().text_color(theme.muted).child("Refreshing…"));
+        }
+
+        pane
     }
 
     fn rename_panel(

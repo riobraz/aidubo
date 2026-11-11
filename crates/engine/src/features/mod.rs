@@ -18,5 +18,6 @@ pub(crate) mod saved_permissions;
 pub(crate) mod schedule;
 pub(crate) mod sessions;
 pub(crate) mod transcript;
+pub(crate) mod transfer;
 pub(crate) mod usage;
 pub(crate) mod vcs;

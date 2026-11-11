@@ -18,7 +18,7 @@ pub use features::provider::Secret;
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreatePtyRequest, CreateScheduleRequest,
     ExecutionOutcome, FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef,
-    PermissionReply, PromptRequest, SkillInfo, StreamEvent,
+    PermissionReply, PromptRequest, SkillInfo, StatsRange, StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -362,6 +362,27 @@ pub enum EngineCommand {
     /// Attach to a PTY's output stream.
     ConnectPty {
         id: String,
+    },
+    /// Fetch a session export and write it to `path`.
+    ExportSession {
+        session_id: String,
+        sanitize: bool,
+        path: PathBuf,
+    },
+    /// Read an import file so the UI can preview it before sending.
+    PreviewImport {
+        path: PathBuf,
+    },
+    /// Import the session in `path` into the project. `copy` rewrites the
+    /// session and message ids so the export can live next to its source.
+    ImportSession {
+        path: PathBuf,
+        copy: bool,
+    },
+    /// Load usage statistics for a range.
+    LoadStats {
+        request_id: u64,
+        range: StatsRange,
     },
 }
 
@@ -958,6 +979,39 @@ impl Engine {
     /// Attach to a PTY's output stream.
     pub fn connect_pty(&self, id: impl Into<String>) -> bool {
         self.send(EngineCommand::ConnectPty { id: id.into() })
+    }
+
+    /// Export a session; the engine writes the file at `path`.
+    pub fn export_session(
+        &self,
+        id: impl Into<String>,
+        sanitize: bool,
+        path: impl Into<PathBuf>,
+    ) -> bool {
+        self.send(EngineCommand::ExportSession {
+            session_id: id.into(),
+            sanitize,
+            path: path.into(),
+        })
+    }
+
+    /// Read an export file for the import preview.
+    pub fn preview_import(&self, path: impl Into<PathBuf>) -> bool {
+        self.send(EngineCommand::PreviewImport { path: path.into() })
+    }
+
+    /// Import a session from an export file. `copy` rewrites the ids so an
+    /// export of a live session can be imported beside it.
+    pub fn import_session(&self, path: impl Into<PathBuf>, copy: bool) -> bool {
+        self.send(EngineCommand::ImportSession {
+            path: path.into(),
+            copy,
+        })
+    }
+
+    /// Load usage statistics for a range.
+    pub fn load_stats(&self, request_id: u64, range: StatsRange) -> bool {
+        self.send(EngineCommand::LoadStats { request_id, range })
     }
 
     fn send(&self, command: EngineCommand) -> bool {

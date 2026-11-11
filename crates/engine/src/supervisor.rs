@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -256,6 +256,28 @@ pub enum EngineEvent {
     PtyClosed { id: String },
     /// A PTY operation failed; the message is safe to display.
     PtyError { id: String, message: String },
+    /// A session export was written to `path`.
+    SessionExported {
+        session_id: String,
+        path: PathBuf,
+        bytes: u64,
+    },
+    /// A session export failed; the message is safe to display.
+    SessionExportError { message: String },
+    /// An import file was read and parsed for the preview.
+    ImportPreviewed {
+        path: PathBuf,
+        transfer: harness_protocol::SessionTransfer,
+    },
+    /// A session was imported into the project.
+    SessionImported { session: Session },
+    /// An import failed; the message is safe to display.
+    SessionImportError { message: String },
+    /// Usage statistics for a range.
+    StatsLoaded {
+        request_id: u64,
+        result: Result<harness_protocol::SessionStats, String>,
+    },
     /// A command could not be completed; the message is safe to display.
     CommandFailed { message: String },
 }
@@ -1523,7 +1545,78 @@ async fn run_command(
             pty_links.insert(id, input, task);
             CommandResult::None
         }
+        EngineCommand::ExportSession {
+            session_id,
+            sanitize,
+            path,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = write_export(api, &session_id, sanitize, &path) => match result {
+                Ok(bytes) => event(EngineEvent::SessionExported {
+                    session_id,
+                    path,
+                    bytes,
+                }),
+                Err(message) => event(EngineEvent::SessionExportError { message }),
+            },
+        },
+        EngineCommand::PreviewImport { path } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = read_import(&path) => match result {
+                Ok(transfer) => event(EngineEvent::ImportPreviewed { path, transfer }),
+                Err(message) => event(EngineEvent::SessionImportError { message }),
+            },
+        },
+        EngineCommand::ImportSession { path, copy } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                let transfer = read_import(&path).await?;
+                let transfer = if copy {
+                    crate::features::transfer::import_as_copy(transfer)
+                } else {
+                    transfer
+                };
+                api.import_session(&transfer).await
+            } => match result {
+                Ok(session) => event(EngineEvent::SessionImported { session }),
+                Err(message) => event(EngineEvent::SessionImportError { message }),
+            },
+        },
+        EngineCommand::LoadStats { request_id, range } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.session_stats(range) => event(EngineEvent::StatsLoaded { request_id, result }),
+        },
     }
+}
+
+/// Fetch an export and write it to the user's file. The payload is written
+/// pretty-printed so a person can inspect what leaves the machine.
+async fn write_export(
+    api: &SessionApi,
+    session_id: &str,
+    sanitize: bool,
+    path: &Path,
+) -> Result<u64, String> {
+    let transfer = api.export_session(session_id, sanitize).await?;
+    let bytes = serde_json::to_vec_pretty(&transfer)
+        .map_err(|err| format!("Could not encode the export: {err}"))?;
+    tokio::fs::write(path, &bytes)
+        .await
+        .map_err(|err| format!("Could not write {}: {err}", path.display()))?;
+    Ok(bytes.len() as u64)
+}
+
+/// Read and structurally parse an export file. The core layer owns the
+/// product-level rules; this only rejects a file that is not an export at all.
+async fn read_import(path: &Path) -> Result<harness_protocol::SessionTransfer, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|err| format!("Could not read {}: {err}", path.display()))?;
+    let transfer = harness_protocol::SessionTransfer::parse(&bytes)?;
+    if transfer.session_id().trim().is_empty() {
+        return Err("This export has no session id.".into());
+    }
+    Ok(transfer)
 }
 
 /// Keep one SSE connection open, forwarding parsed updates to the UI.

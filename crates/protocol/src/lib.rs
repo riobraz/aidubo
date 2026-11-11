@@ -19,6 +19,7 @@ mod provider;
 mod pty;
 mod revert;
 mod schedule;
+mod transfer;
 mod usage;
 mod vcs;
 
@@ -32,6 +33,7 @@ pub use provider::*;
 pub use pty::*;
 pub use revert::*;
 pub use schedule::*;
+pub use transfer::*;
 pub use usage::*;
 pub use vcs::*;
 
