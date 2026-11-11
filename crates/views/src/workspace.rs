@@ -13,9 +13,9 @@ use gpui_kit::*;
 use harness_core::{
     Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
     InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind,
-    PickerState, PluginStore, PromptDraft, RevertStore, SNIPPETS, SavedPermissionStore,
-    SessionStore, ToolCall, ToolStatus, TranscriptStore, UsageStore, VcsStore, flatten, now_ms,
-    parse_patch, path_to_file_uri, relative_time, visible_range,
+    PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
+    SavedPermissionStore, SessionStore, ToolCall, ToolStatus, TranscriptStore, UsageStore,
+    VcsStore, flatten, now_ms, parse_patch, path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -116,6 +116,7 @@ pub struct WorkspaceView {
     pending_plugin_update: Option<String>,
     mcp: McpStore,
     saved_permissions: SavedPermissionStore,
+    providers: ProviderStore,
     pending_saved_permission: Option<String>,
     pending_mcp_remove: Option<String>,
     mcp_add_open: bool,
@@ -232,6 +233,7 @@ impl WorkspaceView {
             pending_plugin_update: None,
             mcp: McpStore::default(),
             saved_permissions: SavedPermissionStore::default(),
+            providers: ProviderStore::default(),
             pending_saved_permission: None,
             pending_mcp_remove: None,
             mcp_add_open: false,
@@ -272,6 +274,8 @@ impl WorkspaceView {
                 self.engine.load_usage_limits(1);
                 self.engine.load_plugins(1);
                 self.engine.load_mcp(1);
+                self.engine.load_providers(1);
+                self.engine.load_integrations(1);
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -301,6 +305,16 @@ impl WorkspaceView {
                     // First load (or the selected session disappeared): open
                     // the newly selected session's timeline.
                     self.follow_selection();
+                }
+            }
+            EngineEvent::ProvidersLoaded { result, .. } => {
+                if let Ok(providers) = result {
+                    self.providers.set_providers(providers);
+                }
+            }
+            EngineEvent::IntegrationsLoaded { result, .. } => {
+                if let Ok(integrations) = result {
+                    self.providers.set_integrations(integrations);
                 }
             }
             EngineEvent::SavedPermissionsLoaded { result, .. } => {
@@ -1739,6 +1753,28 @@ impl WorkspaceView {
                                 }))
                                 .child(if pending { "Confirm" } else { "Revoke" }),
                         ),
+                );
+            }
+            panel = panel.child(section);
+        }
+
+        if !self.providers.is_empty() {
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(div().px_3().py_2().text_sm().child("Providers"));
+            for provider in self.providers.providers() {
+                section = section.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .justify_between()
+                        .text_xs()
+                        .child(provider.name.clone())
+                        .child(provider.package.clone().unwrap_or_default()),
                 );
             }
             panel = panel.child(section);

@@ -112,11 +112,15 @@ Last updated: 2026-11-10
   a Permissions section with two-step Revoke, and an e2e that loads the rules
   for the session's project.
 
+- 2026-11-10 — **M13-02 discovery.** ProviderInfo/IntegrationInfo (2 tests),
+  ProviderStore (1 test), LoadProviders/LoadIntegrations and a Providers section
+  with name + package. Auth flows (OAuth/command/key/external) are NOT
+  implemented; they remain the security-sensitive half of this node.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M13-01 is feature-complete; only the tools-in-a-new-turn check is
-  unverified. Next: M13-02 (providers/auth), M12-02, M12-03, M14-01,
+- M13-02: auth flows + security review. Then M12-02, M12-03, M14-01,
   M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 

@@ -46,6 +46,16 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// Providers.
+    ProvidersLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::ProviderInfo>, String>,
+    },
+    /// Integrations.
+    IntegrationsLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::IntegrationInfo>, String>,
+    },
     /// Saved permission rules.
     SavedPermissionsLoaded {
         request_id: u64,
@@ -452,6 +462,14 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadProviders { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.providers() => event(EngineEvent::ProvidersLoaded { request_id, result }),
+        },
+        EngineCommand::LoadIntegrations { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.integrations() => event(EngineEvent::IntegrationsLoaded { request_id, result }),
+        },
         EngineCommand::LoadSavedPermissions {
             request_id,
             project_id,

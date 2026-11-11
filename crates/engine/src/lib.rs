@@ -74,6 +74,14 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Load providers.
+    LoadProviders {
+        request_id: u64,
+    },
+    /// Load integrations.
+    LoadIntegrations {
+        request_id: u64,
+    },
     /// Load saved permission rules for a project.
     LoadSavedPermissions {
         request_id: u64,
@@ -334,6 +342,16 @@ impl Engine {
             title: title.into(),
             fields,
         })
+    }
+
+    /// Load providers.
+    pub fn load_providers(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadProviders { request_id })
+    }
+
+    /// Load integrations.
+    pub fn load_integrations(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadIntegrations { request_id })
     }
 
     /// Load saved permission rules for a project.
