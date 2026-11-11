@@ -104,13 +104,15 @@ Last updated: 2026-11-10
   unknown fallback (2 tests), `McpStore` (2 tests), `LoadMcp` plus
   Add/Remove/Connect/Disconnect commands and API; the MCP section lists servers
   and removes with a two-step confirmation. Missing: the add-server form and
-  the runtime-restart caveat.
+  the runtime-restart caveat. The add form (name + JSON) with validation and
+  the caveat line is now in the MCP section.
 
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M13-01: add-server form + caveat. Then M13-03, M13-02, M12-02, M12-03,
-  M14-01, M16-01…03, M11-01, M15-01.
+- M13-01 is feature-complete; only the "tools available in a new turn" check
+  is unverified. Then M13-03, M13-02, M12-02, M12-03, M14-01, M16-01…03,
+  M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

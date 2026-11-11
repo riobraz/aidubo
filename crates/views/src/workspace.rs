@@ -116,6 +116,9 @@ pub struct WorkspaceView {
     pending_plugin_update: Option<String>,
     mcp: McpStore,
     pending_mcp_remove: Option<String>,
+    mcp_add_open: bool,
+    mcp_name: Entity<InputState>,
+    mcp_config: Entity<InputState>,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -171,6 +174,10 @@ impl WorkspaceView {
                 .placeholder("Message the agent…")
                 .submit_on_enter(true)
         });
+        let mcp_name = cx.new(|cx| InputState::new(window, cx).placeholder("server name"));
+        let mcp_config = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("{\"command\": \"npx\", \"args\": []}")
+        });
         let form_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type the answer…"));
         let form_subscription =
             cx.subscribe_in(&form_input, window, |this, _, event: &InputEvent, _, cx| {
@@ -223,6 +230,9 @@ impl WorkspaceView {
             pending_plugin_update: None,
             mcp: McpStore::default(),
             pending_mcp_remove: None,
+            mcp_add_open: false,
+            mcp_name,
+            mcp_config,
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -1579,7 +1589,65 @@ impl WorkspaceView {
                 .flex_col()
                 .border_t_1()
                 .border_color(theme.border)
-                .child(div().px_3().py_2().text_sm().child("MCP"));
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .flex()
+                        .justify_between()
+                        .child(div().text_sm().child("MCP"))
+                        .child(
+                            div()
+                                .id("mcp-add-toggle")
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.mcp_add_open = !this.mcp_add_open;
+                                    cx.notify();
+                                }))
+                                .child(if self.mcp_add_open { "Cancel" } else { "Add" }),
+                        ),
+                );
+            if self.mcp_add_open {
+                section = section
+                    .child(Input::new(&self.mcp_name).w_full())
+                    .child(Input::new(&self.mcp_config).w_full())
+                    .child(
+                        div()
+                            .id("mcp-add-save")
+                            .px_3()
+                            .py_1()
+                            .text_xs()
+                            .text_color(theme.accent)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let name = this.mcp_name.read(cx).value().trim().to_string();
+                                let raw = this.mcp_config.read(cx).value().to_string();
+                                let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw)
+                                else {
+                                    this.error = Some("MCP config must be valid JSON.".into());
+                                    cx.notify();
+                                    return;
+                                };
+                                if name.is_empty() {
+                                    this.error = Some("MCP server needs a name.".into());
+                                    cx.notify();
+                                    return;
+                                }
+                                this.engine.add_mcp(name, config);
+                                this.mcp_add_open = false;
+                                cx.notify();
+                            }))
+                            .child("Save"),
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .pb_2()
+                            .text_xs()
+                            .text_color(theme.warning)
+                            .child("Runtime only: this may not survive a sidecar restart."),
+                    );
+            }
             for server in self.mcp.rows() {
                 let name = server.name.clone();
                 let pending = self.pending_mcp_remove.as_deref() == Some(name.as_str());
