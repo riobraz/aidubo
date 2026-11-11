@@ -800,6 +800,9 @@ pub enum StreamEvent {
     /// The project's files changed on disk. The payload is not needed: the
     /// view refreshes its own snapshots.
     FilesystemChanged,
+    /// An MCP server's status or resources changed. The list is reloaded
+    /// instead of patching one entry, because the server is authoritative.
+    McpChanged,
 }
 
 impl StreamEvent {
@@ -828,7 +831,7 @@ impl StreamEvent {
             | Self::CompactionEnded { session_id }
             | Self::CompactionFailed { session_id, .. } => session_id,
             Self::UsageUpdated { session_id, .. } => session_id,
-            Self::FilesystemChanged => "",
+            Self::FilesystemChanged | Self::McpChanged => "",
         }
     }
 }

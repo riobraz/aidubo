@@ -431,7 +431,8 @@ impl TranscriptStore {
             | StreamEvent::UsageUpdated { .. }
             | StreamEvent::CompactionStarted { .. }
             | StreamEvent::CompactionEnded { .. }
-            | StreamEvent::CompactionFailed { .. } => false,
+            | StreamEvent::CompactionFailed { .. }
+            | StreamEvent::McpChanged => false,
         }
     }
 

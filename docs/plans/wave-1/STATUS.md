@@ -6,6 +6,24 @@ Last updated: 2026-11-11
 
 ## Completed
 
+- 2026-11-11 — **M13-01 done.** Live probe against opencode v2.2.7 showed the
+  add endpoint requires `{"config": {...}}` (the inner local/remote config),
+  returns 204, and that connect/disconnect/remove are 204 with a 404
+  `McpServerNotFoundError` for a missing name. Disconnect turns a connected
+  server into `disabled`; runtime-added servers have no `title` or
+  `integrationID`; the NeedsAuth tag is `needs_auth`; `mcp.status.changed` and
+  `mcp.resources.changed` carry only `{server}`. Implemented typed `McpStatus`
+  with error text and unknown-tag fallback, a name-keyed `McpStore` with
+  `replace`/`upsert`/`remove`, 400-char errors and status action rules,
+  add-body validation, `McpError`, and `StreamEvent::McpChanged`. The panel now
+  renders even with no servers, shows a status dot, optional title, Connect for
+  `NeedsAuth`, Disconnect for `Connected`, inline failure text, the
+  restart caveat with a Copy config snippet (`mcp.servers`), and reloads on
+  `StreamConnected` and coalesced `mcp.*` events (250 ms). The e2e runs a
+  test-owned `mcp-echo` stdio fixture: add → connected → disconnect →
+  disabled → connect → connected → remove → absent, plus a missing-name 404 and
+  an unchanged `opencode.json`.
+
 - 2026-11-11 — **M14-01 done.** Live spike against opencode v2.2.7 proved the
   PTY connect endpoint is a WebSocket upgrade: text frames are output, binary
   frames prefixed with NUL plus JSON are byte-cursor updates, input is raw
@@ -210,8 +228,7 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M14-01 is complete. Next: M13-01 (remaining MCP work), M16-01…03, M11-01,
-  M15-01.
+- M13-01 and M14-01 are complete. Next: M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
@@ -222,7 +239,25 @@ transport.
 
 ## Verification
 
-Per node. M14-01:
+Per node. M13-01:
+
+```sh
+cargo test -p harness-protocol -p harness-core -p harness-engine --lib
+                                                        95 + 29 + 56 passed
+cargo test -p harness-engine --test M13-01 -- --nocapture
+                                                        1 passed (6.43 s)
+cargo test --workspace                                  241 passed
+cargo clippy --workspace --all-targets -- -D warnings   clean
+cargo fmt --all -- --check                              clean
+```
+
+The M13-01 e2e drove a real sidecar: the test-owned `mcp-echo` fixture was
+added with `PUT .../mcp/{name}`, reached `connected`, was disconnected to
+`disabled`, reconnected, and removed; every state was read back from
+`GET /api/mcp`. A second remove of a missing name produced the server's 404
+message, and `opencode.json` was byte-identical before and after.
+
+M14-01:
 
 ```sh
 cargo test -p harness-protocol -p harness-engine --lib   54 + 27 passed

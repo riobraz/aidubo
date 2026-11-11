@@ -5,6 +5,15 @@ use reqwest::Method;
 
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
+/// The experimental endpoint requires the server config wrapped in a
+/// `config` object; anything but a JSON object is rejected before the request.
+pub(crate) fn mcp_config_body(config: serde_json::Value) -> Result<serde_json::Value, String> {
+    if !config.is_object() {
+        return Err("MCP config must be a JSON object.".into());
+    }
+    Ok(serde_json::json!({ "config": config }))
+}
+
 impl SessionApi {
     pub async fn mcp_servers(&self) -> Result<Vec<McpServer>, String> {
         let response = self
@@ -19,9 +28,15 @@ impl SessionApi {
     }
 
     pub async fn add_mcp(&self, name: &str, config: serde_json::Value) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("MCP server needs a name.".into());
+        }
+        let body = mcp_config_body(config)?;
         let response = self
             .request(Method::PUT, &format!("/api/experimental/mcp/{name}"))
-            .json(&config)
+            .query(&[("location[directory]", self.directory.as_str())])
+            .json(&body)
             .send()
             .await
             .map_err(network_error)?;
@@ -32,6 +47,7 @@ impl SessionApi {
     pub async fn remove_mcp(&self, name: &str) -> Result<(), String> {
         let response = self
             .request(Method::DELETE, &format!("/api/experimental/mcp/{name}"))
+            .query(&[("location[directory]", self.directory.as_str())])
             .send()
             .await
             .map_err(network_error)?;
@@ -45,6 +61,7 @@ impl SessionApi {
                 Method::POST,
                 &format!("/api/experimental/mcp/{name}/connect"),
             )
+            .query(&[("location[directory]", self.directory.as_str())])
             .send()
             .await
             .map_err(network_error)?;
@@ -58,10 +75,38 @@ impl SessionApi {
                 Method::POST,
                 &format!("/api/experimental/mcp/{name}/disconnect"),
             )
+            .query(&[("location[directory]", self.directory.as_str())])
             .send()
             .await
             .map_err(network_error)?;
         ensure_success(response).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::mcp_config_body;
+
+    #[test]
+    fn mcp_add_body_is_valid_json() {
+        let body = mcp_config_body(json!({
+            "type": "local",
+            "command": ["mcp-echo"]
+        }))
+        .expect("valid config");
+        assert_eq!(
+            body,
+            json!({ "config": { "type": "local", "command": ["mcp-echo"] } })
+        );
+
+        for invalid in [json!([]), json!("local"), json!(null), json!(7)] {
+            assert!(
+                mcp_config_body(invalid.clone()).is_err(),
+                "{invalid} must be rejected"
+            );
+        }
     }
 }

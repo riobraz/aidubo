@@ -117,6 +117,8 @@ pub enum EngineEvent {
     },
     /// An MCP mutation finished; the UI reloads the list.
     McpChanged { name: String },
+    /// An MCP mutation failed; the server snapshot is unchanged.
+    McpError { name: String, message: String },
     /// Installed plugins.
     PluginsLoaded {
         request_id: u64,
@@ -994,7 +996,8 @@ async fn run_command(
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.add_mcp(&name, config) => match result {
                 Ok(()) => event(EngineEvent::McpChanged { name }),
-                Err(message) => event(EngineEvent::CommandFailed {
+                Err(message) => event(EngineEvent::McpError {
+                    name,
                     message: format!("Could not add the MCP server: {message}"),
                 }),
             },
@@ -1003,7 +1006,8 @@ async fn run_command(
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.remove_mcp(&name) => match result {
                 Ok(()) => event(EngineEvent::McpChanged { name }),
-                Err(message) => event(EngineEvent::CommandFailed {
+                Err(message) => event(EngineEvent::McpError {
+                    name,
                     message: format!("Could not remove the MCP server: {message}"),
                 }),
             },
@@ -1012,7 +1016,8 @@ async fn run_command(
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.connect_mcp(&name) => match result {
                 Ok(()) => event(EngineEvent::McpChanged { name }),
-                Err(message) => event(EngineEvent::CommandFailed {
+                Err(message) => event(EngineEvent::McpError {
+                    name,
                     message: format!("Could not connect the MCP server: {message}"),
                 }),
             },
@@ -1021,7 +1026,8 @@ async fn run_command(
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.disconnect_mcp(&name) => match result {
                 Ok(()) => event(EngineEvent::McpChanged { name }),
-                Err(message) => event(EngineEvent::CommandFailed {
+                Err(message) => event(EngineEvent::McpError {
+                    name,
                     message: format!("Could not disconnect the MCP server: {message}"),
                 }),
             },

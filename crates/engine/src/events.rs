@@ -304,6 +304,7 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
             }
         }
         "filesystem.changed" => StreamEvent::FilesystemChanged,
+        "mcp.status.changed" | "mcp.resources.changed" => StreamEvent::McpChanged,
         "session.usage.updated" | "session.usage.recorded" => {
             let data: UsageEventData = serde_json::from_value(data).ok()?;
             StreamEvent::UsageUpdated {
@@ -763,6 +764,16 @@ mod tests {
         assert_eq!(session_id, "s1");
         assert_eq!(tokens.input, 1.0);
         assert_eq!(cost, Some(0.5));
+    }
+
+    #[test]
+    fn parses_mcp_changes_without_a_payload() {
+        for kind in ["mcp.status.changed", "mcp.resources.changed"] {
+            let json = format!(
+                r#"{{"id":"evt_mcp","created":7,"type":"{kind}","data":{{"server":"echo"}}}}"#
+            );
+            assert_eq!(parse_event(&json), Some(StreamEvent::McpChanged));
+        }
     }
 
     #[test]

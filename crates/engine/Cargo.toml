@@ -22,3 +22,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 harness-core.workspace = true
+
+# Only the M13-01 e2e test spawns this; it is not part of the app bundle.
+[[bin]]
+name = "mcp-echo"
+path = "tests/fixtures/mcp_echo.rs"
+test = false

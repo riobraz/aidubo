@@ -22,8 +22,8 @@ use harness_core::{
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
     AgentInfo, AuthStatus, CommandAttempt, CommandInfo, CreateScheduleRequest, FileDiff,
-    InboxDelivery, IntegrationMethod, ModelInfo, OAuthAttempt, PermissionRequest, ScheduleStatus,
-    ScheduleWhen, Session, SkillInfo,
+    InboxDelivery, IntegrationMethod, McpStatus, ModelInfo, OAuthAttempt, PermissionRequest,
+    ScheduleStatus, ScheduleWhen, Session, SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
 
@@ -177,6 +177,8 @@ pub struct WorkspaceView {
     mcp_add_open: bool,
     mcp_name: Entity<InputState>,
     mcp_config: Entity<InputState>,
+    /// Coalesces `mcp.*` stream events; the list is reloaded once they settle.
+    mcp_reload_due: Option<Instant>,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -261,8 +263,13 @@ impl WorkspaceView {
                     .timer(Duration::from_millis(250))
                     .await;
                 let updated = this.update(cx, |this, _| {
-                    for notification in this.notify.flush(Instant::now()) {
+                    let now = Instant::now();
+                    for notification in this.notify.flush(now) {
                         this.deliver(notification);
+                    }
+                    if this.mcp_reload_due.is_some_and(|due| now >= due) {
+                        this.mcp_reload_due = None;
+                        this.engine.load_mcp(3);
                     }
                 });
                 if updated.is_err() {
@@ -371,6 +378,7 @@ impl WorkspaceView {
             mcp_add_open: false,
             mcp_name,
             mcp_config,
+            mcp_reload_due: None,
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -555,6 +563,10 @@ impl WorkspaceView {
             EngineEvent::McpChanged { .. } => {
                 self.engine.load_mcp(2);
             }
+            EngineEvent::McpError { message, .. } => {
+                self.pending_mcp_remove = None;
+                self.error = Some(message);
+            }
             EngineEvent::PluginsLoaded { result, .. } => {
                 if let Ok(plugins) = result {
                     self.plugins.replace(plugins);
@@ -714,6 +726,9 @@ impl WorkspaceView {
             },
             EngineEvent::Stream(event) => match event {
                 StreamEvent::FilesystemChanged => self.on_filesystem_changed(),
+                StreamEvent::McpChanged => {
+                    self.mcp_reload_due = Some(Instant::now() + Duration::from_millis(250));
+                }
                 StreamEvent::UsageUpdated { tokens, cost, .. } => {
                     self.context.set_usage(tokens, cost);
                 }
@@ -792,6 +807,7 @@ impl WorkspaceView {
                 self.stream_connected = true;
                 // Events may have been missed while disconnected.
                 self.follow_selection();
+                self.engine.load_mcp(3);
             }
             EngineEvent::StreamDisconnected => {
                 self.stream_connected = false;
@@ -2673,7 +2689,7 @@ impl WorkspaceView {
             panel = panel.child(section);
         }
 
-        if !self.mcp.is_empty() {
+        {
             let mut section = div()
                 .flex()
                 .flex_col()
@@ -2712,11 +2728,14 @@ impl WorkspaceView {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let name = this.mcp_name.read(cx).value().trim().to_string();
                                 let raw = this.mcp_config.read(cx).value().to_string();
-                                let Ok(config) = serde_json::from_str::<serde_json::Value>(&raw)
-                                else {
-                                    this.error = Some("MCP config must be valid JSON.".into());
-                                    cx.notify();
-                                    return;
+                                let config = match serde_json::from_str::<serde_json::Value>(&raw) {
+                                    Ok(config) if config.is_object() => config,
+                                    _ => {
+                                        this.error =
+                                            Some("MCP config must be a JSON object.".into());
+                                        cx.notify();
+                                        return;
+                                    }
                                 };
                                 if name.is_empty() {
                                     this.error = Some("MCP server needs a name.".into());
@@ -2728,47 +2747,157 @@ impl WorkspaceView {
                                 cx.notify();
                             }))
                             .child("Save"),
-                    )
-                    .child(
-                        div()
-                            .px_3()
-                            .pb_2()
-                            .text_xs()
-                            .text_color(theme.warning)
-                            .child("Runtime only: this may not survive a sidecar restart."),
                     );
             }
-            for server in self.mcp.rows() {
-                let name = server.name.clone();
-                let pending = self.pending_mcp_remove.as_deref() == Some(name.as_str());
+            section = section.child(
+                div()
+                    .px_3()
+                    .pb_2()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .text_xs()
+                    .text_color(theme.warning)
+                    .child("Runtime only: this may not survive a sidecar restart.")
+                    .child(
+                        div()
+                            .id("mcp-copy-config")
+                            .text_color(theme.muted)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let name = this.mcp_name.read(cx).value().trim().to_string();
+                                let config = serde_json::from_str::<serde_json::Value>(
+                                    &this.mcp_config.read(cx).value(),
+                                )
+                                .ok()
+                                .filter(serde_json::Value::is_object);
+                                let (name, config) = match (name.is_empty(), config) {
+                                    (false, Some(config)) => (name, config),
+                                    _ => (
+                                        "server-name".to_string(),
+                                        serde_json::json!({
+                                            "type": "local",
+                                            "command": ["command", "args"]
+                                        }),
+                                    ),
+                                };
+                                let mut servers = serde_json::Map::new();
+                                servers.insert(name, config);
+                                let snippet = serde_json::json!({
+                                    "mcp": { "servers": servers }
+                                });
+                                match serde_json::to_string_pretty(&snippet) {
+                                    Ok(snippet) => {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(snippet));
+                                    }
+                                    Err(_) => {
+                                        this.error =
+                                            Some("Could not build the config snippet.".into());
+                                        cx.notify();
+                                    }
+                                }
+                            }))
+                            .child("Copy config"),
+                    ),
+            );
+            if self.mcp.is_empty() {
                 section = section.child(
                     div()
                         .px_3()
                         .py_1()
-                        .flex()
-                        .justify_between()
                         .text_xs()
-                        .child(name.clone())
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("mcp-remove-{name}")))
-                                .text_color(if pending { theme.danger } else { theme.muted })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if this.pending_mcp_remove.as_deref() == Some(name.as_str()) {
-                                        this.engine.remove_mcp(name.clone());
-                                        this.pending_mcp_remove = None;
-                                    } else {
-                                        this.pending_mcp_remove = Some(name.clone());
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(if pending {
-                                    "Confirm".to_string()
-                                } else {
-                                    server.status.clone()
-                                }),
-                        ),
+                        .text_color(theme.muted)
+                        .child("No MCP servers."),
                 );
+            }
+            for server in self.mcp.rows() {
+                let name = server.name.clone();
+                let pending = self.pending_mcp_remove.as_deref() == Some(name.as_str());
+                let color = match &server.status {
+                    McpStatus::Connected => theme.success,
+                    McpStatus::Pending | McpStatus::NeedsAuth => theme.warning,
+                    McpStatus::Failed { .. } => theme.danger,
+                    McpStatus::Disabled | McpStatus::Unknown { .. } => theme.muted,
+                };
+
+                let mut label = div().flex().flex_col().child(name.clone());
+                if let Some(title) = server.title.clone() {
+                    label = label.child(div().text_color(theme.muted).child(title));
+                }
+
+                let mut actions = div().flex().items_center().gap_2().child(
+                    div()
+                        .text_color(theme.muted)
+                        .child(server.status_label().to_string()),
+                );
+                if server.can_connect() {
+                    let connect_name = name.clone();
+                    actions = actions.child(
+                        div()
+                            .id(SharedString::from(format!("mcp-connect-{name}")))
+                            .text_color(theme.accent)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.engine.connect_mcp(connect_name.clone());
+                                cx.notify();
+                            }))
+                            .child("Connect"),
+                    );
+                }
+                if server.can_disconnect() {
+                    let disconnect_name = name.clone();
+                    actions = actions.child(
+                        div()
+                            .id(SharedString::from(format!("mcp-disconnect-{name}")))
+                            .text_color(theme.accent)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.engine.disconnect_mcp(disconnect_name.clone());
+                                cx.notify();
+                            }))
+                            .child("Disconnect"),
+                    );
+                }
+                let remove_name = name.clone();
+                actions = actions.child(
+                    div()
+                        .id(SharedString::from(format!("mcp-remove-{name}")))
+                        .text_color(if pending { theme.danger } else { theme.muted })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.pending_mcp_remove.as_deref() == Some(remove_name.as_str()) {
+                                this.engine.remove_mcp(remove_name.clone());
+                                this.pending_mcp_remove = None;
+                            } else {
+                                this.pending_mcp_remove = Some(remove_name.clone());
+                            }
+                            cx.notify();
+                        }))
+                        .child(if pending { "Confirm" } else { "Remove" }),
+                );
+
+                let mut row = div()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(status_dot(color))
+                                    .child(label),
+                            )
+                            .child(actions),
+                    );
+                if let Some(error) = server.error.clone() {
+                    row = row.child(div().text_color(theme.danger).child(error));
+                }
+                section = section.child(row);
             }
             panel = panel.child(section);
         }

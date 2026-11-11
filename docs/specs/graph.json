@@ -210,7 +210,7 @@
         "T0"
       ],
       "e2e": "tests/M13-01.rs (no model gate)",
-      "status": "in-progress"
+      "status": "done"
     },
     {
       "id": "M13-02",

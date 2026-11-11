@@ -210,7 +210,7 @@ Update this table when a node closes.
 | M12-01 goals | 2 | blocked (M9-06) |
 | M12-02 schedules | 1 | done |
 | M12-03 notifications | 1 | done |
-| M13-01 mcp | 1 | ready |
+| M13-01 mcp | 1 | done |
 | M13-02 providers | 1 | done |
 | M13-03 saved-permissions | 1 | done |
 | M13-04 plugins | 1 | done |
