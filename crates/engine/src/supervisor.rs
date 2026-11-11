@@ -46,6 +46,13 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// The server accepted a compaction request.
+    CompactionRequested { session_id: String },
+    /// The messages the model would see.
+    ContextLoaded {
+        session_id: String,
+        messages: Vec<harness_protocol::SessionMessage>,
+    },
     /// A revert was staged and is waiting for commit.
     RevertStaged {
         session_id: String,
@@ -399,6 +406,24 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::Compact { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.compact(&session_id) => match result {
+                Ok(()) => event(EngineEvent::CompactionRequested { session_id }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not compact the session: {message}"),
+                }),
+            },
+        },
+        EngineCommand::LoadContext { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.context(&session_id) => match result {
+                Ok(messages) => event(EngineEvent::ContextLoaded { session_id, messages }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not load the context: {message}"),
+                }),
+            },
+        },
         EngineCommand::StageRevert {
             session_id,
             message_id,

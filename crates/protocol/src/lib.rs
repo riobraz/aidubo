@@ -641,7 +641,7 @@ pub struct PermissionReplyRequest {
 /// A live update from the server's SSE stream, reduced to what the transcript
 /// needs. The parser lives in `harness-engine`; this stays IO-free so
 /// `harness-core` can apply events without depending on the network stack.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     ExecutionStarted {
         session_id: String,
@@ -757,6 +757,12 @@ pub enum StreamEvent {
         request_id: String,
         reply: PermissionReply,
     },
+    /// The session's token and cost totals changed.
+    UsageUpdated {
+        session_id: String,
+        tokens: TokenUsage,
+        cost: Option<f64>,
+    },
     /// The project's files changed on disk. The payload is not needed: the
     /// view refreshes its own snapshots.
     FilesystemChanged,
@@ -783,6 +789,7 @@ impl StreamEvent {
             | Self::ToolFailed { session_id, .. }
             | Self::PermissionReplied { session_id, .. } => session_id,
             Self::PermissionAsked { request } => &request.session_id,
+            Self::UsageUpdated { session_id, .. } => session_id,
             Self::FilesystemChanged => "",
         }
     }

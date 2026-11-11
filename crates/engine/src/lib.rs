@@ -74,6 +74,14 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Ask the server to compact the session.
+    Compact {
+        session_id: String,
+    },
+    /// Load the messages the model would see.
+    LoadContext {
+        session_id: String,
+    },
     /// Stage a revert at a message.
     StageRevert {
         session_id: String,
@@ -279,6 +287,20 @@ impl Engine {
             session_id: id.into(),
             title: title.into(),
             fields,
+        })
+    }
+
+    /// Ask the server to compact the session.
+    pub fn compact(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::Compact {
+            session_id: id.into(),
+        })
+    }
+
+    /// Load the messages the model would see.
+    pub fn load_context(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::LoadContext {
+            session_id: id.into(),
         })
     }
 

@@ -2,6 +2,7 @@
 //! a new feature only touches its own file.
 
 pub(crate) mod catalogs;
+pub(crate) mod context;
 pub(crate) mod diff;
 pub(crate) mod files;
 pub(crate) mod form;

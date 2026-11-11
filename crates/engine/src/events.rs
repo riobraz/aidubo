@@ -261,6 +261,14 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
             }
         }
         "filesystem.changed" => StreamEvent::FilesystemChanged,
+        "session.usage.updated" | "session.usage.recorded" => {
+            let data: UsageEventData = serde_json::from_value(data).ok()?;
+            StreamEvent::UsageUpdated {
+                session_id: data.session_id,
+                tokens: data.tokens,
+                cost: data.cost,
+            }
+        }
         "session.step.started" => {
             let data: StepStartedData = serde_json::from_value(data).ok()?;
             StreamEvent::AssistantStarted {
@@ -654,6 +662,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_usage_updated() {
+        let event = parse_event(
+            r#"{"type":"session.usage.updated","data":{"sessionID":"s1","cost":0.5,"tokens":{"input":1,"output":2,"reasoning":0,"cache":{"read":0,"write":0}}}}"#,
+        )
+        .expect("usage event");
+        let crate::StreamEvent::UsageUpdated {
+            session_id,
+            tokens,
+            cost,
+        } = event
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!(session_id, "s1");
+        assert_eq!(tokens.input, 1.0);
+        assert_eq!(cost, Some(0.5));
+    }
+
+    #[test]
     fn ignores_unknown_and_malformed_frames() {
         assert_eq!(
             parse_event(r#"{"type":"server.connected","data":{}}"#),
@@ -665,4 +692,14 @@ mod tests {
             None
         );
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UsageEventData {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(default)]
+    tokens: harness_protocol::TokenUsage,
+    #[serde(default)]
+    cost: Option<f64>,
 }

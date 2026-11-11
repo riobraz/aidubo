@@ -270,6 +270,7 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::CompactionRequested { .. } | EngineEvent::ContextLoaded { .. } => {}
             EngineEvent::RevertStaged { session_id, revert } => {
                 self.revert.stage(&session_id, revert);
             }
@@ -405,6 +406,7 @@ impl WorkspaceView {
             },
             EngineEvent::Stream(event) => match event {
                 StreamEvent::FilesystemChanged => self.on_filesystem_changed(),
+                StreamEvent::UsageUpdated { .. } => {}
                 StreamEvent::PermissionAsked { request } => {
                     self.permissions.push(request);
                 }
