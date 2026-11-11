@@ -13,12 +13,14 @@ mod diff;
 mod form;
 mod inbox;
 mod revert;
+mod usage;
 mod vcs;
 
 pub use diff::*;
 pub use form::*;
 pub use inbox::*;
 pub use revert::*;
+pub use usage::*;
 pub use vcs::*;
 
 use serde::{Deserialize, Serialize};

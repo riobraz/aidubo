@@ -200,7 +200,7 @@ Update this table when a node closes.
 | M9-03 revert | 1 | done |
 | M9-04 compaction-context | 1 | done |
 | M9-05 forms | 1 | done |
-| M9-06 usage | 1 | ready |
+| M9-06 usage | 1 | done |
 | M10-01 vcs-status | 1 | done |
 | M10-02 diff-model | 1 | done |
 | M10-03 diff-view | 2 | done |

@@ -14,7 +14,8 @@ use harness_core::{
     Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
     InboxStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState,
     PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore,
-    VcsStore, flatten, now_ms, parse_patch, path_to_file_uri, relative_time, visible_range,
+    UsageStore, VcsStore, flatten, now_ms, parse_patch, path_to_file_uri, relative_time,
+    visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -110,6 +111,7 @@ pub struct WorkspaceView {
     forms: FormStore,
     revert: RevertStore,
     context: ContextStore,
+    usage: UsageStore,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -212,6 +214,7 @@ impl WorkspaceView {
             forms: FormStore::default(),
             revert: RevertStore::default(),
             context: ContextStore::default(),
+            usage: UsageStore::default(),
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -244,6 +247,7 @@ impl WorkspaceView {
             }
             EngineEvent::Ready { version, port } => {
                 self.request_vcs_status();
+                self.engine.load_usage_limits(1);
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -275,6 +279,10 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::UsageLimitsLoaded { result, .. } => match result {
+                Ok(limits) => self.usage.set(limits, now_ms()),
+                Err(_) => self.usage.mark_unavailable(now_ms()),
+            },
             EngineEvent::CompactionRequested { .. } | EngineEvent::ContextLoaded { .. } => {}
             EngineEvent::RevertStaged { session_id, revert } => {
                 self.revert.stage(&session_id, revert);
@@ -1321,6 +1329,10 @@ impl WorkspaceView {
                 format!("{used:.0} tokens · ${cost:.2}")
             } else {
                 "context unknown".to_string()
+            })
+            .child(match self.usage.budget_count() {
+                0 => String::new(),
+                count => format!("· {count} limits"),
             })
             .child(
                 div()

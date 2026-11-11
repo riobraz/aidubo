@@ -74,6 +74,10 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Load provider budget limits.
+    LoadUsageLimits {
+        request_id: u64,
+    },
     /// Ask the server to compact the session.
     Compact {
         session_id: String,
@@ -288,6 +292,11 @@ impl Engine {
             title: title.into(),
             fields,
         })
+    }
+
+    /// Load provider budget limits.
+    pub fn load_usage_limits(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadUsageLimits { request_id })
     }
 
     /// Ask the server to compact the session.

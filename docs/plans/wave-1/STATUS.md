@@ -87,11 +87,15 @@ Last updated: 2026-11-10
   Compact button; compaction events drive the state. E2E compacts and then
   proves the session still answers a prompt.
 
+- 2026-11-10 — **M9-06 done.** `UsageLimits`/`Budget`, `UsageStore` with a
+  10-minute freshness rule (3 tests), `LoadUsageLimits` with a 503 mapped to
+  `Ok(None)`, meter line shows the budget count; e2e asserts no error on 503.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- Next: M9-06 (usage limits), then integrations, automation, PTY,
-  distribution and projects.
+- M9 is complete. Next: M13-04/M13-01/M13-03/M13-02 (integrations),
+  M12-02/M12-03, M14-01, M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

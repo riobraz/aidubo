@@ -12,4 +12,5 @@ pub(crate) mod prompt;
 pub(crate) mod revert;
 pub(crate) mod sessions;
 pub(crate) mod transcript;
+pub(crate) mod usage;
 pub(crate) mod vcs;

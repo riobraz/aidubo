@@ -46,6 +46,11 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// Provider budget limits.
+    UsageLimitsLoaded {
+        request_id: u64,
+        result: Result<Option<harness_protocol::UsageLimits>, String>,
+    },
     /// The server accepted a compaction request.
     CompactionRequested { session_id: String },
     /// The messages the model would see.
@@ -406,6 +411,10 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadUsageLimits { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.usage_limits() => event(EngineEvent::UsageLimitsLoaded { request_id, result }),
+        },
         EngineCommand::Compact { session_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.compact(&session_id) => match result {

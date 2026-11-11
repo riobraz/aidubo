@@ -14,6 +14,7 @@ mod revert;
 mod sessions;
 mod status;
 mod transcript;
+mod usage;
 mod util;
 mod vcs;
 
@@ -27,6 +28,7 @@ pub use revert::*;
 pub use sessions::*;
 pub use status::*;
 pub use transcript::*;
+pub use usage::*;
 pub use util::*;
 pub use vcs::*;
 
