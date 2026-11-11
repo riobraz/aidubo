@@ -10,6 +10,7 @@ pub(crate) mod inbox;
 pub(crate) mod mcp;
 pub(crate) mod permissions;
 pub(crate) mod plugin;
+pub(crate) mod projects;
 pub(crate) mod prompt;
 pub(crate) mod provider;
 pub(crate) mod pty;

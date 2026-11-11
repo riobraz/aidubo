@@ -14,21 +14,22 @@ use harness_core::{
     AuthFlow, Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry,
     FormStore, InboxStore, McpStore, Notification, NotifyContext, NotifyInput, NotifyKind,
     NotifyPolicy, NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
-    PickerKind, PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
-    SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus, TranscriptStore,
-    TransferStore, UsageStore, VcsStore, describe_when, failure_reason, flatten, import_error,
-    next_run_label, now_ms, parse_patch, path_to_file_uri, relative_time, url_host,
+    PickerKind, PickerState, PluginStore, ProjectDrafts, ProjectStore, PromptDraft, ProviderStore,
+    RevertStore, SNIPPETS, SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus,
+    TranscriptStore, TransferStore, UsageStore, VcsStore, describe_when, failure_reason, flatten,
+    import_error, next_run_label, now_ms, parse_patch, path_to_file_uri, relative_time, url_host,
     validate_duration, validate_import, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
     AgentInfo, AuthStatus, CommandAttempt, CommandInfo, CreateScheduleRequest, FileDiff,
     InboxDelivery, IntegrationMethod, McpStatus, ModelInfo, OAuthAttempt, PermissionRequest,
-    ScheduleStatus, ScheduleWhen, Session, SkillInfo,
+    Project, ProjectId, ScheduleStatus, ScheduleWhen, Session, SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
 
 use crate::notify::NotifyChannels;
+use crate::project_switcher::ProjectSwitcher;
 use crate::transfer::{
     ImportFile, StatsPreset, TransferState, compact_count, money, token_summary,
 };
@@ -137,7 +138,13 @@ impl CatalogCache {
 
 gpui_kit::actions!(
     harness_views,
-    [NewSession, ToggleTheme, FocusComposer, CancelOverlays]
+    [
+        NewSession,
+        ToggleTheme,
+        FocusComposer,
+        CancelOverlays,
+        ToggleProjectSwitcher
+    ]
 );
 
 /// Root view. Owns the engine handle so the child is stopped when the view is
@@ -145,6 +152,9 @@ gpui_kit::actions!(
 pub struct WorkspaceView {
     status: EngineStatus,
     sessions: SessionStore,
+    projects: ProjectStore,
+    switcher: ProjectSwitcher,
+    drafts: ProjectDrafts<PromptDraft>,
     project_dir: PathBuf,
     /// Last command error, shown until dismissed or superseded.
     error: Option<String>,
@@ -234,6 +244,10 @@ impl WorkspaceView {
         notify_channels: NotifyChannels,
         cx: &mut Context<Self>,
     ) -> Self {
+        let project_dir = std::fs::canonicalize(&project_dir).unwrap_or(project_dir);
+        let mut projects = ProjectStore::default();
+        let id = projects.add(project_dir.to_string_lossy().into_owned());
+        projects.select(&id);
         let notify = NotifyPolicy::new(notify_settings);
         let events = engine.events();
         let events_task = cx.spawn_in(window, async move |this, cx| {
@@ -352,6 +366,9 @@ impl WorkspaceView {
         Self {
             status: EngineStatus::default(),
             sessions: SessionStore::default(),
+            projects,
+            switcher: ProjectSwitcher::default(),
+            drafts: ProjectDrafts::default(),
             project_dir,
             error: None,
             renaming: None,
@@ -450,6 +467,23 @@ impl WorkspaceView {
                 self.status = EngineStatus::Stopped;
             }
             EngineEvent::Log(_) => {}
+            EngineEvent::ProjectsLoaded { result } => {
+                if let Err(message) = result {
+                    self.error = Some(message);
+                }
+            }
+            EngineEvent::ProjectSelected { id, canonical } => {
+                if !self.projects.select(&id) {
+                    let mut project = Project::local(canonical.clone());
+                    project.id = id.clone();
+                    self.projects.upsert(project);
+                    self.projects.select(&id);
+                }
+                self.project_dir = PathBuf::from(&canonical);
+                self.reset_project_scoped();
+                self.switcher.close();
+                self.reload_project_scoped();
+            }
             EngineEvent::SessionsLoaded { sessions } => {
                 let previous = self.sessions.selected_id().map(str::to_owned);
                 self.sessions.replace(sessions);
@@ -1023,6 +1057,50 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Clear everything that belongs to the project that was just left.
+    fn reset_project_scoped(&mut self) {
+        self.sessions = SessionStore::default();
+        self.transcript = TranscriptStore::default();
+        self.permissions = PermissionQueue::default();
+        self.inbox = InboxStore::default();
+        self.forms = FormStore::default();
+        self.revert = RevertStore::default();
+        self.context = ContextStore::default();
+        self.usage = UsageStore::default();
+        self.schedules = ScheduleStore::default();
+        self.schedules_session = None;
+        self.show_finished_schedules = false;
+        self.schedule_form_open = false;
+        self.pending_schedule_delete = None;
+        self.renaming = None;
+        self.pending_delete = None;
+        self.permission_in_flight = None;
+        self.vcs = VcsStore::default();
+        self.diff_files.clear();
+        self.diff = ParsedDiff::default();
+        self.diff_rows.clear();
+        self.selected_file = None;
+        self.error = None;
+    }
+
+    /// Reload the server-backed lists that are scoped to a directory.
+    fn reload_project_scoped(&mut self) {
+        self.request_vcs_status();
+        self.engine.load_usage_limits(1);
+        self.engine.load_plugins(1);
+        self.engine.load_mcp(1);
+        self.engine.load_providers(1);
+        self.engine.load_integrations(1);
+        for (request_id, kind) in [
+            (1, CatalogKind::Commands),
+            (2, CatalogKind::Skills),
+            (3, CatalogKind::Agents),
+            (4, CatalogKind::Models),
+        ] {
+            self.engine.list_catalog(request_id, kind);
+        }
+    }
+
     /// Point the transcript at the selected session and reload it.
     fn follow_selection(&mut self) {
         match self.sessions.selected_id().map(str::to_owned) {
@@ -1543,6 +1621,7 @@ impl WorkspaceView {
     }
 
     fn create_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_current_draft();
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
@@ -1557,13 +1636,131 @@ impl WorkspaceView {
         if self.sessions.selected_id() == Some(id.as_str()) {
             return;
         }
+        self.save_current_draft();
         self.sessions.select(&id);
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
-        self.clear_composer(window, cx);
+        match self.active_project_key() {
+            Some(project) => self.restore_draft(&project, &id, window, cx),
+            None => self.clear_composer(window, cx),
+        }
         self.follow_selection();
         cx.notify();
+    }
+
+    fn active_project_key(&self) -> Option<String> {
+        self.projects.active_id().map(|id| id.as_str().to_owned())
+    }
+
+    /// Remember the composer under the active project and session before the
+    /// selection changes.
+    fn save_current_draft(&mut self) {
+        let Some(project) = self.active_project_key() else {
+            return;
+        };
+        let session = self.sessions.selected_id().unwrap_or_default().to_owned();
+        self.drafts.set(&project, &session, self.draft.clone());
+        self.drafts.set(&project, "", self.draft.clone());
+    }
+
+    /// Load a draft when one was saved for this project/session, falling back
+    /// to the project's last used draft.
+    fn restore_draft(
+        &mut self,
+        project: &str,
+        session: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.draft = self
+            .drafts
+            .get(project, session)
+            .or_else(|| self.drafts.get(project, ""))
+            .cloned()
+            .unwrap_or_default();
+        let text = self.draft.text().to_owned();
+        self.composer.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+        });
+    }
+
+    fn switch_project(&mut self, id: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.projects.active_id() == Some(&id) {
+            self.switcher.close();
+            cx.notify();
+            return;
+        }
+        self.save_current_draft();
+        if !self.projects.select(&id) {
+            self.error = Some("That project is no longer open.".into());
+            cx.notify();
+            return;
+        }
+        let Some(canonical) = self.projects.active_canonical().map(str::to_owned) else {
+            return;
+        };
+        self.project_dir = PathBuf::from(canonical);
+        self.reset_project_scoped();
+        self.switcher.close();
+        self.restore_draft(id.as_str(), "", window, cx);
+        if !self.engine.select_project(id) {
+            self.error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn add_project_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some(SharedString::from("Add project folder")),
+        });
+        self.error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = receiver.await;
+            if this
+                .update(cx, |this, cx| {
+                    match picked {
+                        Ok(Ok(Some(paths))) => {
+                            for path in paths {
+                                this.add_project_path(path);
+                            }
+                            this.switcher.open();
+                        }
+                        Ok(Ok(None)) => {}
+                        Ok(Err(error)) => {
+                            this.error = Some(format!("Could not open the folder picker: {error}"));
+                        }
+                        Err(_) => {
+                            this.error = Some("The folder picker closed unexpectedly.".into());
+                        }
+                    }
+                    cx.notify();
+                })
+                .is_err()
+            {
+                // The window closed while the picker was open.
+            }
+        })
+        .detach();
+    }
+
+    fn add_project_path(&mut self, path: PathBuf) {
+        match std::fs::canonicalize(&path) {
+            Ok(canonical) if canonical.is_dir() => {
+                self.projects.add(canonical.to_string_lossy().into_owned());
+                self.error = None;
+            }
+            Ok(_) => {
+                self.error = Some(format!("{} is not a directory.", path.display()));
+            }
+            Err(error) => {
+                self.error = Some(format!("Could not open {}: {error}", path.display()));
+            }
+        }
     }
 
     fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1902,12 +2099,14 @@ impl WorkspaceView {
             || self.pending_delete.is_some()
             || self.error.is_some()
             || self.picker.is_some()
+            || self.switcher.is_open()
             || self.transfer.export_open
             || self.transfer.import_preview.is_some()
             || self.transfer.stats_open;
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
+        self.switcher.close();
         self.transfer.export_open = false;
         self.transfer.export_notice = None;
         self.transfer.import_preview = None;
@@ -3472,6 +3671,97 @@ impl WorkspaceView {
             )
     }
 
+    fn render_project_switcher(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let active_name = self
+            .projects
+            .active()
+            .map(|project| project.display_name().to_owned())
+            .unwrap_or_else(|| "No project".to_owned());
+        let canonical = self
+            .projects
+            .active_canonical()
+            .unwrap_or_default()
+            .to_owned();
+
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .pt_3()
+            .pb_2()
+            .child(
+                Button::new("project-switcher-toggle")
+                    .small()
+                    .ghost()
+                    .label(SharedString::from(format!("{active_name} ▾")))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.switcher.toggle();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(canonical),
+            );
+
+        if self.switcher.is_open() {
+            let mut menu = div()
+                .mt_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg)
+                .p_1();
+            for project in self.projects.projects() {
+                let id = project.id.clone();
+                let name = project.display_name().to_owned();
+                let path = project.canonical.clone();
+                let active = self.projects.active_id() == Some(&project.id);
+                menu = menu.child(
+                    div()
+                        .id(SharedString::from(format!("project-{path}")))
+                        .flex()
+                        .flex_col()
+                        .cursor_pointer()
+                        .rounded_sm()
+                        .px_2()
+                        .py_1()
+                        .bg(if active { theme.border } else { theme.bg })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.switch_project(id.clone(), window, cx);
+                        }))
+                        .child(div().text_sm().child(name))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child(path),
+                        ),
+                );
+            }
+            menu = menu.child(
+                Button::new("project-add")
+                    .small()
+                    .ghost()
+                    .label("Add folder…")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.add_project_folder(window, cx)),
+                    ),
+            );
+            section = section.child(menu);
+        }
+
+        section.child(div().mt_2().h(px(1.)).bg(theme.border))
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         let ready = self.status.is_ready();
@@ -3522,6 +3812,7 @@ impl WorkspaceView {
             .bg(theme.surface)
             .border_r_1()
             .border_color(theme.border)
+            .child(self.render_project_switcher(theme, cx))
             .child(
                 div()
                     .flex()
@@ -5060,6 +5351,10 @@ impl Render for WorkspaceView {
             .on_action(
                 cx.listener(|this, _: &FocusComposer, window, cx| this.focus_composer(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleProjectSwitcher, _, cx| {
+                this.switcher.toggle();
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &CancelOverlays, _, cx| this.cancel_overlays(cx)))
             .size_full()
             .flex()

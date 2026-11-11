@@ -18,7 +18,7 @@ pub use features::provider::Secret;
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreatePtyRequest, CreateScheduleRequest,
     ExecutionOutcome, FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef,
-    PermissionReply, PromptRequest, SkillInfo, StatsRange, StreamEvent,
+    PermissionReply, Project, ProjectId, PromptRequest, SkillInfo, StatsRange, StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -60,6 +60,12 @@ impl EngineConfig {
 pub enum EngineCommand {
     /// Reload the project's session list from the server.
     ListSessions,
+    /// Load the server's project registry.
+    ListProjects,
+    /// Switch the active project and reload its sessions.
+    SelectProject {
+        id: ProjectId,
+    },
     /// Create a new session in the project and select it.
     CreateSession,
     RenameSession {
@@ -432,6 +438,17 @@ impl Engine {
     /// Reload the session list. Returns false once the engine is shutting down.
     pub fn refresh_sessions(&self) -> bool {
         self.send(EngineCommand::ListSessions)
+    }
+
+    /// Load the server's project registry.
+    pub fn list_projects(&self) -> bool {
+        self.send(EngineCommand::ListProjects)
+    }
+
+    /// Switch the active project. Its sessions arrive in
+    /// [`EngineEvent::SessionsLoaded`] after [`EngineEvent::ProjectSelected`].
+    pub fn select_project(&self, id: ProjectId) -> bool {
+        self.send(EngineCommand::SelectProject { id })
     }
 
     /// Create a session in the project.

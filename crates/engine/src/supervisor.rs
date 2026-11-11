@@ -9,8 +9,8 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use futures_util::StreamExt as _;
 use harness_protocol::{
-    AcceptedPrompt, AttemptStatus, AuthStatus, CatalogKind, ModelRef, PermissionRequest, Session,
-    SessionList, SessionMessage, StreamEvent,
+    AcceptedPrompt, AttemptStatus, AuthStatus, CatalogKind, ModelRef, PermissionRequest, ProjectId,
+    Session, SessionList, SessionMessage, StreamEvent,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -38,6 +38,15 @@ pub enum EngineEvent {
     Log(String),
     /// A full snapshot of the project's sessions.
     SessionsLoaded { sessions: Vec<Session> },
+    /// The server's project registry.
+    ProjectsLoaded {
+        result: Result<Vec<harness_protocol::Project>, String>,
+    },
+    /// The active project changed; its sessions follow in `SessionsLoaded`.
+    ProjectSelected {
+        id: harness_protocol::ProjectId,
+        canonical: String,
+    },
     /// A new session was created on the server.
     SessionCreated { session: Session },
     /// A session title was changed on the server.
@@ -414,7 +423,7 @@ async fn run_inner(
         .await
         .map_err(|_| "the UI stopped listening".to_string())?;
 
-    let api = match SessionApi::new(port, password, &config.project_dir) {
+    let mut api = match SessionApi::new(port, password, &config.project_dir) {
         Ok(api) => api,
         Err(message) => {
             stop(&mut child).await;
@@ -431,7 +440,7 @@ async fn run_inner(
     let mut auth_pollers = AuthPollers::default();
     let mut pty_links = PtyLinks::default();
     match run_command(
-        &api,
+        &mut api,
         EngineCommand::ListSessions,
         &mut shutdown,
         &mut plugin_check_at,
@@ -476,7 +485,7 @@ async fn run_inner(
                 };
 
                 match run_command(
-                    &api,
+                    &mut api,
                     command,
                     &mut shutdown,
                     &mut plugin_check_at,
@@ -691,8 +700,37 @@ async fn schedule_mutation(
     }
 }
 
+/// Resolve a project selection to its canonical directory.
+///
+/// A locally added project uses its canonical path as the id; a server project
+/// uses the opaque id from `GET /api/project`. A path that is not already
+/// canonical is rejected instead of being silently rewritten, so every later
+/// request uses the same identity the server stores.
+async fn resolve_project(api: &SessionApi, id: &ProjectId) -> Result<String, String> {
+    let path = Path::new(id.as_str());
+    if path.is_dir() {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|err| format!("Could not resolve {}: {err}", id))?;
+        let canonical = canonical.to_string_lossy().into_owned();
+        if canonical != id.as_str() {
+            return Err(format!(
+                "Project paths must be canonical. Use {canonical} instead of {}.",
+                id
+            ));
+        }
+        return Ok(canonical);
+    }
+
+    let projects = api.projects().await?;
+    projects
+        .into_iter()
+        .find(|project| project.id == *id)
+        .map(|project| project.canonical)
+        .ok_or_else(|| "That project is no longer available. Reopen its folder.".to_string())
+}
+
 async fn run_command(
-    api: &SessionApi,
+    api: &mut SessionApi,
     command: EngineCommand,
     shutdown: &mut oneshot::Receiver<()>,
     plugin_check_at: &mut Option<std::time::Instant>,
@@ -701,6 +739,34 @@ async fn run_command(
     pty_links: &mut PtyLinks,
 ) -> CommandResult {
     match command {
+        EngineCommand::ListProjects => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.projects() => event(EngineEvent::ProjectsLoaded { result }),
+        },
+        EngineCommand::SelectProject { id } => match resolve_project(api, &id).await {
+            Ok(canonical) => {
+                api.directory = canonical.clone();
+                tokio::select! {
+                    _ = &mut *shutdown => CommandResult::Shutdown,
+                    result = api.list() => match result {
+                        Ok(sessions) => {
+                            tracing::debug!(project = %canonical, count = sessions.len(), "switched project");
+                            events(vec![
+                                EngineEvent::ProjectSelected { id, canonical },
+                                EngineEvent::SessionsLoaded { sessions },
+                            ])
+                        }
+                        Err(message) => events(vec![
+                            EngineEvent::ProjectSelected { id, canonical },
+                            EngineEvent::CommandFailed {
+                                message: format!("Could not load sessions: {message}"),
+                            },
+                        ]),
+                    },
+                }
+            }
+            Err(message) => event(EngineEvent::CommandFailed { message }),
+        },
         EngineCommand::ListSessions => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.list() => event(match result {

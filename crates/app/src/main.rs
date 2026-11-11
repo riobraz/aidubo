@@ -9,7 +9,8 @@ use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
 use harness_engine::{Engine, EngineConfig};
 use harness_views::{
-    CancelOverlays, FocusComposer, NewSession, NotifyChannels, ToggleTheme, WorkspaceView,
+    CancelOverlays, FocusComposer, NewSession, NotifyChannels, ToggleProjectSwitcher, ToggleTheme,
+    WorkspaceView,
 };
 use rust_harness::notify;
 
@@ -69,6 +70,8 @@ fn main() {
                 KeyBinding::new("ctrl-l", FocusComposer, Some("Workspace")),
                 KeyBinding::new("cmd-shift-l", ToggleTheme, Some("Workspace")),
                 KeyBinding::new("ctrl-shift-l", ToggleTheme, Some("Workspace")),
+                KeyBinding::new("cmd-shift-p", ToggleProjectSwitcher, Some("Workspace")),
+                KeyBinding::new("ctrl-shift-p", ToggleProjectSwitcher, Some("Workspace")),
                 KeyBinding::new("escape", CancelOverlays, Some("Workspace")),
             ]);
             cx.new(|cx| {

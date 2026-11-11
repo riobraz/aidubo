@@ -280,3 +280,100 @@ async fn pty_ticket_is_requested_before_connect() {
     assert!(url.contains("cursor=42"), "{url}");
     assert!(url.contains("location%5Bdirectory%5D="), "{url}");
 }
+
+fn temp_project(tag: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "rust-harness-api-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&path).expect("create temp project");
+    std::fs::canonicalize(&path).expect("canonical project")
+}
+
+fn query_param(raw: &str, key: &str) -> Option<String> {
+    let target = raw.lines().next()?.split_whitespace().nth(1)?;
+    let query = target.split_once('?')?.1;
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=')?;
+        if name == key {
+            return Some(percent_decode(value));
+        }
+    }
+    None
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[tokio::test]
+async fn list_sessions_scopes_by_directory() {
+    let directory = temp_project("list");
+    let canonical = directory.to_string_lossy().into_owned();
+    let (port, receiver) = serve_once("200 OK", r#"{"data":[]}"#);
+    let api = SessionApi::new(port, "secret".into(), &directory).expect("api");
+
+    let sessions = api.list().await.expect("sessions");
+    assert!(sessions.is_empty());
+
+    let raw = receive(receiver);
+    let request_line = raw.lines().next().unwrap_or_default();
+    assert!(request_line.starts_with("GET /api/session?"), "{raw}");
+    assert_eq!(
+        query_param(&raw, "directory").as_deref(),
+        Some(canonical.as_str())
+    );
+    assert_eq!(query_param(&raw, "parentID").as_deref(), Some("null"));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn create_session_pins_directory() {
+    let directory = temp_project("create");
+    let canonical = directory.to_string_lossy().into_owned();
+    let (port, receiver) = serve_once("200 OK", r#"{"data":{"id":"s1"}}"#);
+    let api = SessionApi::new(port, "secret".into(), &directory).expect("api");
+
+    let session = api.create().await.expect("created session");
+    assert_eq!(session.id, "s1");
+
+    let raw = receive(receiver);
+    assert!(raw.starts_with("POST /api/session "), "{raw}");
+    assert_eq!(
+        body_of(&raw)["location"]["directory"],
+        serde_json::json!(canonical)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
