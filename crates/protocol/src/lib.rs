@@ -20,6 +20,7 @@ mod pty;
 mod revert;
 mod schedule;
 mod transfer;
+mod update;
 mod usage;
 mod vcs;
 
@@ -34,6 +35,7 @@ pub use pty::*;
 pub use revert::*;
 pub use schedule::*;
 pub use transfer::*;
+pub use update::*;
 pub use usage::*;
 pub use vcs::*;
 

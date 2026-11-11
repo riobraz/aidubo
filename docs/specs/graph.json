@@ -307,8 +307,8 @@
       "deps": [
         "E0"
       ],
-      "e2e": "tests/M16-02.rs (local manifest server)",
-      "status": "ready"
+      "e2e": "crates/app/tests/M16-02.rs (local manifest server)",
+      "status": "done"
     },
     {
       "id": "M16-03",

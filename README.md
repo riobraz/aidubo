@@ -62,6 +62,15 @@ title and body passed as argv; a denial turns the feature off and shows an
 inline notice. Settings live in
 `~/Library/Application Support/Rust Harness/notifications.json`.
 
+**Updates.** When a manifest URL is configured, a launch check fetches a
+signed manifest, verifies its Ed25519 signature against the pinned key,
+compares versions numerically, and looks for the artifact matching this OS and
+architecture. It runs on a background thread, at most once per 24 hours, and
+reports only "up to date", "available", or "unavailable"; offline is quiet. An
+available release can be downloaded to the Downloads folder, where its size and
+SHA-256 are verified before the file is revealed. Nothing is ever installed or
+executed silently. A build without a manifest URL makes no request.
+
 The post-M7 sequence — rich composer, conversation control, git review,
 projects/worktrees/multi-run, automation, integrations, terminal, preview — is
 in [`docs/ROADMAP.md`](docs/ROADMAP.md), with executable per-feature specs, a
@@ -156,6 +165,9 @@ and a model/agent switch reach the server. The notification test runs when
 | `RUST_HARNESS_AUTOQUIT_MS` | Exit after N milliseconds; used for smoke tests |
 | `RUST_HARNESS_NOTIFY_SINK` | Append notifications as JSON lines to this file instead of the OS |
 | `RUST_HARNESS_NOTIFY_SETTINGS` | Override the notification settings file path |
+| `RUST_HARNESS_UPDATE_MANIFEST` | Signed update manifest URL; unset means no update check |
+| `RUST_HARNESS_UPDATE_PUBLIC_KEY` | Hex Ed25519 key override; honored by debug builds only |
+| `RUST_HARNESS_UPDATE_SETTINGS` | Override the update settings file path |
 | `RUST_LOG` | Tracing filter (default: `info,harness_engine=debug`) |
 
 The sidecar is launched on `127.0.0.1` with a random port and a random

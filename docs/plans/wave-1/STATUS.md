@@ -6,6 +6,22 @@ Last updated: 2026-11-11
 
 ## Completed
 
+- 2026-11-11 — **M16-02 done.** Signed update check. Protocol
+  `UpdateManifest`/`UpdateArtifact` keep unknown fields and canonicalize the
+  signed payload with a recursive key sort and compact separators, so the
+  signature does not depend on `serde_json`'s map configuration. The app
+  verifies Ed25519 with `ed25519-dalek` against a pinned key, compares numeric
+  versions, selects the artifact for this OS/arch, and reports only
+  up-to-date/available/unavailable; the check runs on a background thread, at
+  most once per 24 h, and is skipped entirely when the setting is off. The
+  pinned key is a placeholder whose private half was discarded (fails closed);
+  debug builds can inject a public key for the e2e. Download verifies size and
+  SHA-256 before writing, and reveal is a separate user action. The e2e serves
+  a signed fixture manifest over loopback, asserts available, flips one byte in
+  the signed version to prove the signature fails, rejects a manifest signed
+  by another key, verifies a good download and refuses a corrupted body, then
+  stops the server and asserts a quiet unavailable state.
+
 - 2026-11-11 — **M16-03 done.** Session export, import, and stats. Live
   contract against opencode v2.2.7: export returns `{data: {info, messages}}`
   and sanitize rewrites the title to `[redacted:session-title:<id>]` (so a
@@ -248,19 +264,36 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M13-01, M14-01 and M16-03 are complete. Next: M16-02, M16-01, M11-01,
+- M13-01, M14-01, M16-02 and M16-03 are complete. Next: M16-01, M11-01,
   M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
 
-None technical. Remaining work is volume: 16 of the 21 wave-1 spec nodes are
+None technical. Remaining work is volume: 17 of the 21 wave-1 spec nodes are
 done in the graph; M14-02/M14-03 and other later-wave nodes depend on this
 transport.
 
 ## Verification
 
-Per node. M16-03:
+Per node. M16-02:
+
+```sh
+cargo test -p rust-harness --lib                         9 passed
+cargo test -p rust-harness --test M16-02                 1 passed (1.16 s)
+cargo test -p harness-protocol --lib                     60 passed
+cargo clippy -p rust-harness -p harness-protocol --all-targets -- -D warnings
+                                                         clean
+cargo fmt --all -- --check                               clean
+```
+
+The M16-02 e2e ran only against loopback: a thread-owned HTTP server returned
+the signed manifest and artifact; available, up-to-date, tampered signature,
+wrong key, good download, corrupt download, and server-stopped states were all
+asserted. The accepted socket is forced back to blocking on macOS; without
+that, the first hyper request ended with `IncompleteMessage`.
+
+M16-03:
 
 ```sh
 cargo test -p harness-protocol -p harness-core -p harness-engine --lib

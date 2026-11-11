@@ -20,6 +20,7 @@ fn main() {
     }
 
     init_tracing();
+    rust_harness::update::spawn_launch_check();
 
     let project_dir = resolve_project_dir();
     if !project_dir.is_dir() {

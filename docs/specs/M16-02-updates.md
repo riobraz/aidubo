@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | done |
 | Wave | 1 |
 | Size | M |
 | Depends on | E0 |
@@ -69,19 +69,47 @@ pub enum UpdateState {
 | `harness-app` | `update_missing_arch_is_unavailable` | wrong platform |
 | `harness-app` | `update_download_verifies_hash` | no corrupt install |
 
-E2E (`tests/M16-02.rs`, no model gate): start a local HTTP server serving a
-fixture manifest signed with a test key (injected via a test-only trust
-override), assert `Available`; tamper one byte and assert `Unavailable`; stop
-the server and assert `Unavailable` within the timeout. No real network.
+E2E (`crates/app/tests/M16-02.rs`, no model gate): start a local HTTP server
+serving a fixture manifest signed with a test key (injected through
+`Trust::from_bytes`), assert `Available`; flip one byte in the signed version
+and assert `Unavailable`; a manifest signed by another key is also
+`Unavailable`; stop the server and assert `Unavailable` within the timeout,
+with a quiet reason. No real network.
 
 ## 5. Acceptance
 
-- [ ] A tampered manifest or artifact never shows "available".
-- [ ] Startup is never blocked by the check.
-- [ ] Download verifies before revealing.
-- [ ] Offline is quiet, not an error dialog.
+- [x] A tampered manifest or artifact never shows "available".
+- [x] Startup is never blocked by the check.
+- [x] Download verifies before revealing.
+- [x] Offline is quiet, not an error dialog.
 
-## 6. Risks
+## 6. Implementation notes (2026-11-11)
+
+- The e2e lives in `crates/app/tests/M16-02.rs`; the spec's `tests/M16-02.rs`
+  is the same file relative to the owning crate. It uses a loopback
+  `TcpListener` served by a test thread. The accepted socket must be switched
+  back to blocking on macOS: it can inherit the nonblocking listener flag, and
+  the first request then fails with `IncompleteMessage`.
+- `UpdateState` lives in `crates/app/src/update.rs`; the manifest types are in
+  `harness-protocol`. The protocol canonicalizes the signed payload itself
+  (recursive key sort, compact separators) instead of relying on
+  `serde_json`'s map ordering, so enabling `preserve_order` in the future
+  cannot break signatures. Unknown manifest fields are kept and signed.
+- The pinned key is a placeholder whose private half was discarded, so this
+  build cannot be tricked into accepting a signed release until the release
+  pipeline installs the real key. Debug builds honor
+  `RUST_HARNESS_UPDATE_PUBLIC_KEY`; release builds ignore it.
+- The manifest URL comes from `RUST_HARNESS_UPDATE_MANIFEST` or the
+  compile-time `option_env!` of the same name. Without either, no request is
+  made.
+- Settings (`enabled`, `last_checked_at`) live beside the notification
+  settings; a failed check still records the time, so an offline machine is
+  asked once a day, not on every launch.
+- Download and reveal are separate: `download_verified` writes only after the
+  size and SHA-256 match, and `reveal` asks the platform file manager to show
+  the file. Nothing executes the download.
+
+## 7. Risks
 
 The update channel is a security-sensitive download path. The signature is
 verified before the URL is even shown, the key is pinned, and the feature can
