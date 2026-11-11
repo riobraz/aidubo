@@ -20,6 +20,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::api::SessionApi;
 use crate::events;
+use crate::features::pty::{PtyLinks, pump_pty};
 use crate::{CatalogData, EngineCommand, EngineConfig, locate};
 
 /// Lifecycle events and command results emitted by the supervisor.
@@ -241,6 +242,18 @@ pub enum EngineEvent {
         session_id: String,
         request_id: String,
     },
+    /// A PTY snapshot was created or refreshed.
+    PtyCreated { pty: harness_protocol::PtyProcess },
+    /// The project's PTY list.
+    PtysLoaded {
+        result: Result<Vec<harness_protocol::PtyProcess>, String>,
+    },
+    /// Coalesced output from a PTY connection.
+    PtyOutput { id: String, bytes: Vec<u8> },
+    /// A PTY connection closed or its process was removed.
+    PtyClosed { id: String },
+    /// A PTY operation failed; the message is safe to display.
+    PtyError { id: String, message: String },
     /// A command could not be completed; the message is safe to display.
     CommandFailed { message: String },
 }
@@ -392,6 +405,7 @@ async fn run_inner(
     // Populate the sidebar as soon as the engine is usable.
     let mut plugin_check_at: Option<std::time::Instant> = None;
     let mut auth_pollers = AuthPollers::default();
+    let mut pty_links = PtyLinks::default();
     match run_command(
         &api,
         EngineCommand::ListSessions,
@@ -399,6 +413,7 @@ async fn run_inner(
         &mut plugin_check_at,
         events,
         &mut auth_pollers,
+        &mut pty_links,
     )
     .await
     {
@@ -410,6 +425,7 @@ async fn run_inner(
                 let _ = events.send(event).await;
             }
         }
+        CommandResult::None => {}
         CommandResult::Shutdown => {
             stop(&mut child).await;
             let _ = events.send(EngineEvent::Stopped).await;
@@ -442,6 +458,7 @@ async fn run_inner(
                     &mut plugin_check_at,
                     events,
                     &mut auth_pollers,
+                    &mut pty_links,
                 )
                 .await
                 {
@@ -453,6 +470,7 @@ async fn run_inner(
                             let _ = events.send(event).await;
                         }
                     }
+                    CommandResult::None => {}
                     CommandResult::Shutdown => {
                         stop(&mut child).await;
                         let _ = events.send(EngineEvent::Stopped).await;
@@ -469,6 +487,8 @@ enum CommandResult {
     Event(Box<EngineEvent>),
     /// A mutation plus the authoritative list reload that follows it.
     Events(Box<[EngineEvent]>),
+    /// The command succeeded without a UI-visible event.
+    None,
     Shutdown,
 }
 
@@ -654,6 +674,7 @@ async fn run_command(
     plugin_check_at: &mut Option<std::time::Instant>,
     event_tx: &Sender<EngineEvent>,
     pollers: &mut AuthPollers,
+    pty_links: &mut PtyLinks,
 ) -> CommandResult {
     match command {
         EngineCommand::ListSessions => tokio::select! {
@@ -1422,6 +1443,79 @@ async fn run_command(
                     })
                 }
             }
+        }
+        EngineCommand::CreatePty { request } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.create_pty(request) => match result {
+                Ok(pty) => event(EngineEvent::PtyCreated { pty }),
+                Err(message) => event(EngineEvent::PtyError {
+                    id: String::new(),
+                    message: format!("Could not create the terminal: {message}"),
+                }),
+            },
+        },
+        EngineCommand::ListPtys => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.ptys() => event(EngineEvent::PtysLoaded { result }),
+        },
+        EngineCommand::ResizePty { id, cols, rows } => {
+            let call_id = id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.resize_pty(&call_id, cols, rows) => match result {
+                    Ok(pty) => event(EngineEvent::PtyCreated { pty }),
+                    Err(message) => event(EngineEvent::PtyError {
+                        id,
+                        message: format!("Could not resize the terminal: {message}"),
+                    }),
+                },
+            }
+        }
+        EngineCommand::WritePty { id, bytes } => match pty_links.write(&id, bytes) {
+            Ok(()) => CommandResult::None,
+            Err(message) => event(EngineEvent::PtyError { id, message }),
+        },
+        EngineCommand::DeletePty { id } => {
+            // Stop the reader before the server tears the process down, so the
+            // close event has a single source.
+            pty_links.close(&id);
+            let call_id = id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.delete_pty(&call_id) => match result {
+                    Ok(()) => event(EngineEvent::PtyClosed { id }),
+                    Err(message) => event(EngineEvent::PtyError {
+                        id,
+                        message: format!("Could not delete the terminal: {message}"),
+                    }),
+                },
+            }
+        }
+        EngineCommand::ConnectPty { id } => {
+            if pty_links.is_connected(&id) {
+                return CommandResult::None;
+            }
+            let ticket = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = api.pty_ticket(&id) => result,
+            };
+            let ticket = match ticket {
+                Ok(ticket) => ticket,
+                Err(message) => {
+                    return event(EngineEvent::PtyError {
+                        id,
+                        message: format!("Could not authorize the terminal connection: {message}"),
+                    });
+                }
+            };
+            let url = match api.pty_connect_url(&id, &ticket.ticket, None) {
+                Ok(url) => url,
+                Err(message) => return event(EngineEvent::PtyError { id, message }),
+            };
+            let (input, input_rx) = async_channel::unbounded();
+            let task = tokio::spawn(pump_pty(id.clone(), url, input_rx, event_tx.clone()));
+            pty_links.insert(id, input, task);
+            CommandResult::None
         }
     }
 }

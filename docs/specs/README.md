@@ -214,7 +214,7 @@ Update this table when a node closes.
 | M13-02 providers | 1 | done |
 | M13-03 saved-permissions | 1 | done |
 | M13-04 plugins | 1 | done |
-| M14-01 pty-transport | 1 | ready |
+| M14-01 pty-transport | 1 | done |
 | M14-03 terminal-view | 2 | blocked (M14-01, M14-02) |
 | M15-01 preview | 1 | ready |
 | M16-01 linux-packaging | 1 | ready |

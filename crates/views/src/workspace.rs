@@ -805,6 +805,12 @@ impl WorkspaceView {
                 self.engine.load_permissions(session_id);
             }
             EngineEvent::Interrupted { .. } => {}
+            // There is no terminal surface yet; M14-02 consumes these.
+            EngineEvent::PtyCreated { .. }
+            | EngineEvent::PtysLoaded { .. }
+            | EngineEvent::PtyOutput { .. }
+            | EngineEvent::PtyClosed { .. }
+            | EngineEvent::PtyError { .. } => {}
             EngineEvent::CommandFailed { message } => {
                 self.permission_in_flight = None;
                 self.error = Some(message);

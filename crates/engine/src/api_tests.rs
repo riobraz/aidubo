@@ -249,3 +249,34 @@ async fn key_error_body_is_scrubbed() {
     assert!(raw.starts_with("POST /api/integration/acme/connect/key?"));
     assert_eq!(body_of(&raw)["key"], "sk-live-abcdef1234567890");
 }
+
+#[tokio::test]
+async fn pty_ticket_is_requested_before_connect() {
+    let (port, receiver) = serve_once(
+        "200 OK",
+        r#"{"location":"/tmp","data":{"ticket":"tok-123","expires_in":60}}"#,
+    );
+    let api = api(port);
+
+    // The connect URL can only be built from a ticket the server just issued.
+    let ticket = api.pty_ticket("pty_1").await.expect("ticket");
+    assert_eq!(ticket.ticket, "tok-123");
+    assert_eq!(ticket.expires_in, 60);
+
+    let raw = receive(receiver);
+    assert!(
+        raw.starts_with("POST /api/pty/pty_1/connect-token?"),
+        "{raw}"
+    );
+    assert!(raw.contains("location%5Bdirectory%5D="), "{raw}");
+    assert!(raw.to_lowercase().contains("x-opencode-ticket: 1"), "{raw}");
+
+    let url = api
+        .pty_connect_url("pty_1", &ticket.ticket, Some(42))
+        .expect("connect url");
+    assert!(url.starts_with("ws://127.0.0.1:"), "{url}");
+    assert!(url.contains("/api/pty/pty_1/connect?"), "{url}");
+    assert!(url.contains("ticket=tok-123"), "{url}");
+    assert!(url.contains("cursor=42"), "{url}");
+    assert!(url.contains("location%5Bdirectory%5D="), "{url}");
+}

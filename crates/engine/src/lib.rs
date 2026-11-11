@@ -16,9 +16,9 @@ use tokio::sync::oneshot;
 
 pub use features::provider::Secret;
 pub use harness_protocol::{
-    AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreateScheduleRequest, ExecutionOutcome,
-    FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply,
-    PromptRequest, SkillInfo, StreamEvent,
+    AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreatePtyRequest, CreateScheduleRequest,
+    ExecutionOutcome, FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef,
+    PermissionReply, PromptRequest, SkillInfo, StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -337,6 +337,31 @@ pub enum EngineCommand {
         session_id: String,
         request_id: String,
         reply: PermissionReply,
+    },
+    /// Create a PTY process on the server.
+    CreatePty {
+        request: CreatePtyRequest,
+    },
+    /// List the project's PTY processes.
+    ListPtys,
+    /// Resize a PTY's terminal grid.
+    ResizePty {
+        id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Write raw bytes to a PTY's input.
+    WritePty {
+        id: String,
+        bytes: Vec<u8>,
+    },
+    /// Terminate and remove a PTY.
+    DeletePty {
+        id: String,
+    },
+    /// Attach to a PTY's output stream.
+    ConnectPty {
+        id: String,
     },
 }
 
@@ -896,6 +921,43 @@ impl Engine {
             request_id: request_id.into(),
             reply,
         })
+    }
+
+    /// Create a PTY process.
+    pub fn create_pty(&self, request: CreatePtyRequest) -> bool {
+        self.send(EngineCommand::CreatePty { request })
+    }
+
+    /// List the project's PTY processes.
+    pub fn list_ptys(&self) -> bool {
+        self.send(EngineCommand::ListPtys)
+    }
+
+    /// Resize a PTY.
+    pub fn resize_pty(&self, id: impl Into<String>, cols: u16, rows: u16) -> bool {
+        self.send(EngineCommand::ResizePty {
+            id: id.into(),
+            cols,
+            rows,
+        })
+    }
+
+    /// Write raw bytes to a PTY's input.
+    pub fn write_pty(&self, id: impl Into<String>, bytes: Vec<u8>) -> bool {
+        self.send(EngineCommand::WritePty {
+            id: id.into(),
+            bytes,
+        })
+    }
+
+    /// Terminate and remove a PTY.
+    pub fn delete_pty(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::DeletePty { id: id.into() })
+    }
+
+    /// Attach to a PTY's output stream.
+    pub fn connect_pty(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::ConnectPty { id: id.into() })
     }
 
     fn send(&self, command: EngineCommand) -> bool {

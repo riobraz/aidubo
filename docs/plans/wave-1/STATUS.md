@@ -6,6 +6,20 @@ Last updated: 2026-11-11
 
 ## Completed
 
+- 2026-11-11 — **M14-01 done.** Live spike against opencode v2.2.7 proved the
+  PTY connect endpoint is a WebSocket upgrade: text frames are output, binary
+  frames prefixed with NUL plus JSON are byte-cursor updates, input is raw
+  client bytes, resize is `PUT /api/pty/{id}`, tickets are single-use and last
+  60 s, and `DELETE` terminates the OS process. Evidence is in
+  `docs/spikes/pty-transport.md`; the transport decision is ADR 0003 (0002 was
+  already the terminal crate). Implemented `PtyProcess`/`PtyStatus`/
+  `CreatePtyRequest`/`PtyTicket`, the create/list/resize/write/delete/connect
+  engine commands, a `tokio-tungstenite` connection with one ticket per
+  connect, 64 KiB/16 ms output batching, and cursor-frame filtering. The e2e
+  creates a real `/bin/sh` PTY, asserts the first bytes are `hello`, resizes to
+  100x30, proves the pid is alive before delete, then proves it is gone, the
+  list no longer contains it, and the sidecar shuts down cleanly.
+
 - 2026-11-11 — **M12-03 done.** `StreamEvent::ExecutionFinished` carries the
   server's SSE `id` (fallback `created:{created}`) so replay dedupe is stable;
   live `form.created` frames parse to `StreamEvent::FormCreated` and upsert
@@ -44,6 +58,17 @@ Last updated: 2026-11-11
 
 ## Discovered
 
+- opencode v2.2.7 appends `-l` to a PTY's `args` (the probe sent
+  `/bin/sh -c …` and the server stored `["-c","…","-l"]`); the client must use
+  the `Pty` the server returns, not its request echo.
+- The PTY cursor counts raw PTY bytes, while output frames are lossily
+  re-encoded UTF-8 (an invalid byte becomes U+FFFD), so a client cannot count
+  received frame bytes to resume. Only the server-reported cursor is valid.
+- A ticket is single-use; reusing it or using it after 60 s closes the
+  handshake with code 1006. An established connection keeps working past the
+  ticket's expiry.
+- `DELETE /api/pty/{id}` is a real terminate: 204, `kill -0` fails, the list
+  entry disappears, and the open socket closes with code 1000.
 - OpenCode v2.2.7 puts a stable top-level `id` (`evt_…`) on
   `session.execution.*` SSE frames and emits `form.created` over SSE; the
   engine reads both. The id is the reconnect-safe notification key; frames
@@ -185,16 +210,36 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M12-03 is complete. Next: M14-01, M16-01…03, M11-01, M15-01.
+- M14-01 is complete. Next: M13-01 (remaining MCP work), M16-01…03, M11-01,
+  M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
 
-None technical. Remaining work is volume: 17 of 21 nodes.
+None technical. Remaining work is volume: 15 of the 21 wave-1 spec nodes are
+done in the graph; M14-02/M14-03 and other later-wave nodes depend on this
+transport.
 
 ## Verification
 
-Per node. M12-03:
+Per node. M14-01:
+
+```sh
+cargo test -p harness-protocol -p harness-engine --lib   54 + 27 passed
+cargo test -p harness-engine --test M14-01 -- --nocapture
+                                                        1 passed (2.62 s)
+cargo test --workspace                                  236 passed
+cargo clippy --workspace --all-targets -- -D warnings   clean
+cargo fmt --all -- --check                              clean
+```
+
+The M14-01 e2e ran against opencode v2.2.7: it read `hello`, resized to
+100x30, verified the pid was alive before `DELETE`, then polled until
+`kill -0` failed and the PTY was absent from `GET /api/pty`; the sidecar
+shutdown left no listener on its port. The spike's resize evidence showed the
+shell moving from `stty size` `24 80` to `30 100`.
+
+M12-03:
 
 ```sh
 cargo test -p harness-core --lib                94 passed
