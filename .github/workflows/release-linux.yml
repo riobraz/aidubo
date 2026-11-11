@@ -1,0 +1,97 @@
+name: Release Linux
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  OPENCODE_VERSION: "2.2.6"
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install build and smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream \
+            dpkg-dev \
+            libasound2-dev \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-randr0-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            pkg-config \
+            xvfb
+
+      - name: Install OpenCode
+        run: sudo npm install -g "@opencode/cli@${OPENCODE_VERSION}"
+
+      - name: Install appimagetool
+        run: |
+          sudo wget -q -O /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+
+      - name: Build the AppImage and deb
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          OPENCODE_BIN: /usr/local/bin/opencode
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            export VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          scripts/package-linux.sh
+
+      - name: Smoke-test both artifacts
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          RUST_HARNESS_PACKAGING_E2E: "1"
+          SKIP_BUILD: "1"
+        run: scripts/e2e-linux.sh
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-harness-linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.sha256
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" \
+                 --title "$GITHUB_REF_NAME" \
+                 --generate-notes
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/*.AppImage dist/*.deb dist/*.sha256 --clobber

@@ -11,7 +11,7 @@ PROJECT ?= $(CURDIR)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build run test test-fast test-e2e fmt fmt-check clippy check bundle install clean
+.PHONY: help build run test test-fast test-e2e fmt fmt-check clippy check bundle install clean package-linux test-packaging-linux
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -46,6 +46,12 @@ check: fmt-check clippy ## Format check plus clippy
 
 bundle: ## Build dist/Rust Harness.app with the bundled sidecar (UNIVERSAL=1 for both arches)
 	scripts/package-macos.sh
+
+package-linux: ## Build the Linux AppImage and deb (Linux only; needs appimagetool)
+	scripts/package-linux.sh
+
+test-packaging-linux: ## Smoke-test the Linux artifacts under xvfb (Linux only)
+	RUST_HARNESS_PACKAGING_E2E=1 scripts/e2e-linux.sh
 
 install: bundle ## Copy the built app into /Applications
 	ditto "$(CURDIR)/dist/Rust Harness.app" "/Applications/Rust Harness.app"

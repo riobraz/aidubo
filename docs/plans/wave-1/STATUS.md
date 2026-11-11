@@ -6,6 +6,24 @@ Last updated: 2026-11-11
 
 ## Completed
 
+- 2026-11-11 — **M16-01 done (Linux verification pending CI).** Linux
+  packaging. `locate_binary` now checks packaged sidecars first: macOS
+  `Contents/Resources` and Linux `usr/lib/rust-harness`, both requiring
+  `opencode.sha256` and failing with `ManifestMissing` when it is absent. A
+  developer binary beside the executable may still omit the manifest; an
+  explicit path argument still wins, and a verified bundle now outranks
+  `RUST_HARNESS_OPENCODE_BIN`. `scripts/package-linux.sh` builds one AppDir,
+  writes the manifest after copying the sidecar, and produces an AppImage plus
+  a deb with `dpkg-deb`, each with a `.sha256`. `scripts/e2e-linux.sh` (gate
+  `RUST_HARNESS_PACKAGING_E2E=1`) extracts both, runs `sha256sum -c`, launches
+  each under `xvfb` with `RUST_HARNESS_AUTOQUIT_MS=3000` with one retry, and
+  requires no sidecar process to remain. `.github/workflows/release-linux.yml`
+  builds on `ubuntu-24.04` with pinned `@opencode/cli@2.2.6`, runs the smoke
+  test, and uploads/attaches the artifacts. The macOS host could not run the
+  Linux smoke test, so the AppImage/deb launch and no-leftover-process
+  acceptance items remain unchecked until CI runs; `bash -n` and YAML parsing
+  are clean locally.
+
 - 2026-11-11 — **M16-02 done.** Signed update check. Protocol
   `UpdateManifest`/`UpdateArtifact` keep unknown fields and canonicalize the
   signed payload with a recursive key sort and compact separators, so the
@@ -264,19 +282,36 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M13-01, M14-01, M16-02 and M16-03 are complete. Next: M16-01, M11-01,
+- M13-01, M14-01, M16-01, M16-02 and M16-03 are complete. Next: M11-01,
   M15-01.
-- Gate G1 has not run; the branch `wave-1` is not ready to merge.
+- Gate G1 has not run; the branch `wave-1` is not ready to merge. The Linux
+  packaging smoke test needs a `ubuntu-24.04` runner (`make
+  test-packaging-linux`).
 
 ## Blockers
 
-None technical. Remaining work is volume: 17 of the 21 wave-1 spec nodes are
+None technical. Remaining work is volume: 18 of the 21 wave-1 spec nodes are
 done in the graph; M14-02/M14-03 and other later-wave nodes depend on this
 transport.
 
 ## Verification
 
-Per node. M16-02:
+Per node. M16-01:
+
+```sh
+cargo test -p harness-engine --lib                       36 passed
+cargo clippy -p harness-engine --all-targets -- -D warnings   clean
+bash -n scripts/package-linux.sh                         clean
+bash -n scripts/e2e-linux.sh                             clean
+python3 -c "yaml.safe_load(...release-linux.yml)"        clean
+```
+
+The Linux packaging e2e was not run: this host is macOS and has no
+`appimagetool`, `dpkg-deb`, or `xvfb`. The checksum lookup, ordering, and
+fail-closed rules are unit-tested on this host; the artifact build and launch
+path is wired for the `release-linux.yml` workflow.
+
+M16-02:
 
 ```sh
 cargo test -p rust-harness --lib                         9 passed

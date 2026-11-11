@@ -294,7 +294,7 @@
         "E0"
       ],
       "e2e": "scripts/e2e-linux.sh @ RUST_HARNESS_PACKAGING_E2E",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M16-02",
