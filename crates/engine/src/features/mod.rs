@@ -8,6 +8,7 @@ pub(crate) mod files;
 pub(crate) mod form;
 pub(crate) mod inbox;
 pub(crate) mod permissions;
+pub(crate) mod plugin;
 pub(crate) mod prompt;
 pub(crate) mod revert;
 pub(crate) mod sessions;

@@ -13,9 +13,9 @@ use gpui_kit::*;
 use harness_core::{
     Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
     InboxStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState,
-    PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore,
-    UsageStore, VcsStore, flatten, now_ms, parse_patch, path_to_file_uri, relative_time,
-    visible_range,
+    PluginStore, PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus,
+    TranscriptStore, UsageStore, VcsStore, flatten, now_ms, parse_patch, path_to_file_uri,
+    relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -112,6 +112,7 @@ pub struct WorkspaceView {
     revert: RevertStore,
     context: ContextStore,
     usage: UsageStore,
+    plugins: PluginStore,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -215,6 +216,7 @@ impl WorkspaceView {
             revert: RevertStore::default(),
             context: ContextStore::default(),
             usage: UsageStore::default(),
+            plugins: PluginStore::default(),
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -248,6 +250,7 @@ impl WorkspaceView {
             EngineEvent::Ready { version, port } => {
                 self.request_vcs_status();
                 self.engine.load_usage_limits(1);
+                self.engine.load_plugins(1);
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -279,6 +282,12 @@ impl WorkspaceView {
                     self.follow_selection();
                 }
             }
+            EngineEvent::PluginsLoaded { result, .. } => {
+                if let Ok(plugins) = result {
+                    self.plugins.replace(plugins);
+                }
+            }
+            EngineEvent::PluginsChecked { .. } => {}
             EngineEvent::UsageLimitsLoaded { result, .. } => match result {
                 Ok(limits) => self.usage.set(limits, now_ms()),
                 Err(_) => self.usage.mark_unavailable(now_ms()),
@@ -1503,6 +1512,28 @@ impl WorkspaceView {
             }
         }
         panel = panel.child(list);
+
+        if !self.plugins.is_empty() {
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(div().px_3().py_2().text_sm().child("Plugins"));
+            for plugin in self.plugins.rows() {
+                section = section.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .justify_between()
+                        .text_xs()
+                        .child(plugin.id.clone())
+                        .child(plugin.status.clone()),
+                );
+            }
+            panel = panel.child(section);
+        }
 
         let offset: f32 = self.diff_scroll.offset().y.into();
         let row_height = 18.0;

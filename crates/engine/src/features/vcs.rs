@@ -33,7 +33,10 @@ impl SessionApi {
     pub async fn vcs_init(&self) -> Result<(), String> {
         let response = self
             .request(Method::POST, "/api/vcs/init")
-            .query(&[("location[directory]", self.directory.as_str())])
+            .query(&[
+                ("location[directory]", self.directory.as_str()),
+                ("provider", "git"),
+            ])
             .send()
             .await
             .map_err(network_error)?;

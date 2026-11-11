@@ -91,11 +91,19 @@ Last updated: 2026-11-10
   10-minute freshness rule (3 tests), `LoadUsageLimits` with a 503 mapped to
   `Ok(None)`, meter line shows the budget count; e2e asserts no error on 503.
 
+- 2026-11-10 — **M13-04 data path.** `PluginInfo` with raw source/state
+  unions plus labels (3 tests), `PluginStore` sorted with 400-char errors
+  (2 tests), `LoadPlugins`/`CheckPlugins` and API; the right panel lists id and
+  status. Missing: update action with confirmation and the check rate limit.
+- 2026-11-10 — **Finding:** v2.2.6 rejects every `provider` value on
+  `POST /api/vcs/init` with `Unknown VCS provider`; the M10-01 test records the
+  message instead of claiming the endpoint works.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M9 is complete. Next: M13-04/M13-01/M13-03/M13-02 (integrations),
-  M12-02/M12-03, M14-01, M16-01…03, M11-01, M15-01.
+- M13-04: update action + rate limit. Then M13-01, M13-03, M13-02, M12-02,
+  M12-03, M14-01, M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

@@ -46,6 +46,16 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// Installed plugins.
+    PluginsLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::PluginInfo>, String>,
+    },
+    /// A plugin check finished.
+    PluginsChecked {
+        request_id: u64,
+        result: Result<(), String>,
+    },
     /// Provider budget limits.
     UsageLimitsLoaded {
         request_id: u64,
@@ -411,6 +421,14 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadPlugins { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.plugins() => event(EngineEvent::PluginsLoaded { request_id, result }),
+        },
+        EngineCommand::CheckPlugins { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.check_plugins() => event(EngineEvent::PluginsChecked { request_id, result }),
+        },
         EngineCommand::LoadUsageLimits { request_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.usage_limits() => event(EngineEvent::UsageLimitsLoaded { request_id, result }),

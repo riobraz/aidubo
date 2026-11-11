@@ -74,6 +74,14 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Load installed plugins.
+    LoadPlugins {
+        request_id: u64,
+    },
+    /// Run a plugin update check.
+    CheckPlugins {
+        request_id: u64,
+    },
     /// Load provider budget limits.
     LoadUsageLimits {
         request_id: u64,
@@ -292,6 +300,16 @@ impl Engine {
             title: title.into(),
             fields,
         })
+    }
+
+    /// Load installed plugins.
+    pub fn load_plugins(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadPlugins { request_id })
+    }
+
+    /// Run a plugin update check.
+    pub fn check_plugins(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::CheckPlugins { request_id })
     }
 
     /// Load provider budget limits.
