@@ -130,27 +130,59 @@ Last updated: 2026-11-11
   with name + package. Auth flows (OAuth/command/key/external) are NOT
   implemented; they remain the security-sensitive half of this node.
 
+- 2026-11-11 — **M13-02 done.** Typed `IntegrationMethod` (OAuth, Command, Key,
+  External, Env, Unknown), `ConnectionInfo`, `OAuthAttempt`,
+  `CommandAttempt`, `AttemptStatus` (protocol: 6 tests); `ProviderStore` with
+  per-integration `AuthFlow` and redacted errors (core: 5 tests); engine
+  `Secret`, integration API, engine-owned 1 s polling capped at 300 s with a
+  cancellable task registry, and the matching commands/events (engine: 2 new
+  tests). The Providers section lists each provider with package and
+  connection badge; the connect dialog starts OAuth (opens only on a click,
+  `https` only, host shown), shows a command's exact argv and waits for an
+  explicit confirmation, sends a masked key and clears the field immediately,
+  and explains external credential management. E2E lists providers and
+  integrations on a fresh project, asserts a key sent to a missing integration
+  returns a 404-shaped message with no key material, and cancels a
+  non-existent attempt cleanly.
+
+- 2026-11-11 — **M13-02 security review (merge gate) — passed.** Reviewed the
+  key path (masked input → `Engine::send_key(&str)` → `Secret` →
+  `SendKeyRequest`, which has no `Debug`; one POST; cleared input immediately;
+  no store, entity state, event, or log holds it), `Secret`'s redacted `Debug`
+  and NUL-overwrite `Drop`, the key-scrubbing error path, OAuth link hardening,
+  and the redaction of every failure banner. Tests:
+  `key_never_appears_in_debug_output`, `key_error_body_is_scrubbed`,
+  `provider_error_is_redacted`. The only copy of the key while typing is the
+  masked input widget's own buffer; it is emptied on send. Residual risk:
+  process memory snapshots can still contain transient buffers; not
+  preventable in a GUI process.
+
 ## In progress / next
 
-- M10 is complete (M10-01, M10-02, M10-03) and M12-02 is complete.
-- M13-02: auth flows + security review. Then M12-03, M14-01, M16-01…03,
-  M11-01, M15-01.
+- M13-02 is complete, including the security review. Next: M12-03, M14-01,
+  M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
 
-None technical. Remaining work is volume: 19 of 21 nodes.
+None technical. Remaining work is volume: 18 of 21 nodes.
 
 ## Verification
 
-Per node. M12-02:
+Per node. M13-02:
 
 ```sh
-cargo test -p harness-protocol                   47 passed
-cargo test -p harness-core                       84 passed
-cargo test -p harness-engine --lib               19 passed
-cargo test -p harness-engine --test M12-02       1 passed
-cargo test --workspace                           204 passed
+cargo test -p harness-protocol                   51 passed
+cargo test -p harness-core                       88 passed
+cargo test -p harness-engine --lib               23 passed
+cargo test -p harness-engine --test M13-02       1 passed
+cargo test --workspace                           216 passed
 cargo clippy --workspace --all-targets -- -D warnings   clean
 cargo fmt --all -- --check                       clean
 ```
+
+Discovered against opencode v2.2.7: `external` methods carry a `form` array of
+field keys and no URL, so the dialog cannot show an external link; cancelling a
+non-existent attempt returns success, so the e2e accepts either terminal
+event. The integration list is large (hundreds of providers), so the view only
+reloads it after a real connection, not on every attempt update.

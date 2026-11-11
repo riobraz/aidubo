@@ -212,3 +212,40 @@ async fn command_posts_arguments_and_attachments() {
         serde_json::json!({"name": "review", "text": "HEAD~1"})
     );
 }
+
+#[tokio::test]
+async fn key_never_appears_in_debug_output() {
+    use crate::{EngineCommand, Secret};
+
+    let secret = Secret::new("sk-live-abcdef1234567890");
+    let command = EngineCommand::SendKey {
+        integration_id: "acme".into(),
+        key: secret.clone(),
+    };
+    let debug = format!("{command:?}");
+    assert!(!debug.contains("sk-live-abcdef1234567890"), "{debug}");
+    assert!(debug.contains("[redacted]"), "{debug}");
+
+    let direct = format!("{secret:?}");
+    assert!(!direct.contains("sk-live"));
+}
+
+#[tokio::test]
+async fn key_error_body_is_scrubbed() {
+    use crate::features::provider::Secret;
+
+    let (port, receiver) = serve_once(
+        "404 Not Found",
+        r#"{"message":"integration refused sk-live-abcdef1234567890"}"#,
+    );
+    let error = api(port)
+        .send_key("acme", &Secret::new("sk-live-abcdef1234567890"))
+        .await
+        .expect_err("missing integration");
+    assert!(!error.contains("sk-live-abcdef1234567890"), "{error}");
+    assert!(error.contains("[redacted]"), "{error}");
+
+    let raw = receive(receiver);
+    assert!(raw.starts_with("POST /api/integration/acme/connect/key?"));
+    assert_eq!(body_of(&raw)["key"], "sk-live-abcdef1234567890");
+}

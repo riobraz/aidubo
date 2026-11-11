@@ -11,17 +11,18 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
-    InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind,
-    PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
+    AuthFlow, Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry,
+    FormStore, InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
+    PickerKind, PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
     SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus, TranscriptStore,
     UsageStore, VcsStore, describe_when, failure_reason, flatten, next_run_label, now_ms,
-    parse_patch, path_to_file_uri, relative_time, validate_duration, visible_range,
+    parse_patch, path_to_file_uri, relative_time, url_host, validate_duration, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
-    AgentInfo, CommandInfo, CreateScheduleRequest, FileDiff, InboxDelivery, ModelInfo,
-    PermissionRequest, ScheduleStatus, ScheduleWhen, Session, SkillInfo,
+    AgentInfo, AuthStatus, CommandAttempt, CommandInfo, CreateScheduleRequest, FileDiff,
+    InboxDelivery, IntegrationMethod, ModelInfo, OAuthAttempt, PermissionRequest, ScheduleStatus,
+    ScheduleWhen, Session, SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
 
@@ -32,6 +33,24 @@ struct CatalogCache {
     skills: Vec<SkillInfo>,
     agents: Vec<AgentInfo>,
     models: Vec<ModelInfo>,
+}
+
+/// The connect flow currently open for one integration.
+#[derive(Debug, Clone)]
+struct ProviderDialog {
+    integration_id: String,
+    integration_name: String,
+    method: Option<IntegrationMethod>,
+}
+
+impl ProviderDialog {
+    fn new(integration_id: String, integration_name: String) -> Self {
+        Self {
+            integration_id,
+            integration_name,
+            method: None,
+        }
+    }
 }
 
 impl CatalogCache {
@@ -118,6 +137,8 @@ pub struct WorkspaceView {
     mcp: McpStore,
     saved_permissions: SavedPermissionStore,
     providers: ProviderStore,
+    provider_dialog: Option<ProviderDialog>,
+    provider_key: Entity<InputState>,
     schedules: ScheduleStore,
     schedules_session: Option<String>,
     show_finished_schedules: bool,
@@ -192,6 +213,12 @@ impl WorkspaceView {
         let mcp_config = cx.new(|cx| {
             InputState::new(window, cx).placeholder("{\"command\": \"npx\", \"args\": []}")
         });
+        // Masked at construction: the key is never rendered in plain text.
+        let provider_key = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("API key (never stored)")
+        });
         let form_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type the answer…"));
         let schedule_prompt =
             cx.new(|cx| InputState::new(window, cx).placeholder("Prompt to send…"));
@@ -250,6 +277,8 @@ impl WorkspaceView {
             mcp: McpStore::default(),
             saved_permissions: SavedPermissionStore::default(),
             providers: ProviderStore::default(),
+            provider_dialog: None,
+            provider_key,
             schedules: ScheduleStore::default(),
             schedules_session: None,
             show_finished_schedules: false,
@@ -361,6 +390,67 @@ impl WorkspaceView {
                 if let Ok(integrations) = result {
                     self.providers.set_integrations(integrations);
                 }
+            }
+            EngineEvent::AuthAttemptStarted {
+                integration_id,
+                kind,
+                method,
+                attempt_id,
+                url,
+                command,
+                instructions,
+            } => match kind.as_str() {
+                "oauth" => {
+                    let attempt = OAuthAttempt {
+                        attempt_id,
+                        url: url.unwrap_or_default(),
+                        instructions,
+                        ..OAuthAttempt::default()
+                    };
+                    self.providers
+                        .begin_oauth(&integration_id, &method, &attempt);
+                }
+                "command" => {
+                    let attempt = CommandAttempt { attempt_id };
+                    self.providers.begin_command(
+                        &integration_id,
+                        &method,
+                        &attempt,
+                        command.unwrap_or_default(),
+                    );
+                }
+                _ => {}
+            },
+            EngineEvent::AuthAttemptUpdated {
+                integration_id,
+                status,
+                ..
+            } => {
+                if status == AuthStatus::Complete {
+                    self.providers.mark_connected(&integration_id);
+                }
+            }
+            EngineEvent::AuthAttemptFailed {
+                integration_id,
+                message,
+            } => {
+                self.providers.fail(&integration_id, &message);
+                // Only the redacted form reaches the banner.
+                self.error = self
+                    .providers
+                    .last_error(&integration_id)
+                    .map(str::to_string);
+                self.close_provider_dialog(&integration_id);
+            }
+            EngineEvent::AuthAttemptCancelled { integration_id } => {
+                self.providers.cancel(&integration_id);
+                self.close_provider_dialog(&integration_id);
+            }
+            EngineEvent::ProviderConnected { integration_id } => {
+                self.providers.mark_connected(&integration_id);
+                self.error = None;
+                self.close_provider_dialog(&integration_id);
+                self.engine.load_integrations(2);
             }
             EngineEvent::SavedPermissionsLoaded { result, .. } => {
                 if let Ok(rules) = result {
@@ -668,6 +758,375 @@ impl WorkspaceView {
                 self.schedule_form_open = false;
             }
         }
+    }
+
+    /// Close the connect dialog when it belongs to `integration_id`.
+    fn close_provider_dialog(&mut self, integration_id: &str) {
+        if self
+            .provider_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.integration_id == integration_id)
+        {
+            self.provider_dialog = None;
+        }
+    }
+
+    /// Pick a method inside the open dialog. OAuth starts immediately; the
+    /// other flows wait for an explicit action.
+    fn choose_provider_method(&mut self, method: IntegrationMethod) {
+        let Some(dialog) = self.provider_dialog.as_mut() else {
+            return;
+        };
+        let integration_id = dialog.integration_id.clone();
+        let is_oauth = matches!(method, IntegrationMethod::OAuth { .. });
+        let method_id = method.method_id().map(str::to_string);
+        dialog.method = Some(method);
+        if is_oauth && let Some(method_id) = method_id {
+            self.engine.start_oauth(integration_id, method_id);
+        }
+    }
+
+    /// Render the open connect dialog for one integration.
+    fn render_provider_dialog(
+        &self,
+        dialog: &ProviderDialog,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let integration_id = dialog.integration_id.clone();
+        let flow = self.providers.flow(&integration_id);
+        let integration = self
+            .providers
+            .integrations()
+            .iter()
+            .find(|integration| integration.id == integration_id)
+            .cloned();
+        let mut card = div()
+            .mx_3()
+            .mb_2()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .text_xs()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().child(format!("Connect {}", dialog.integration_name)))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "provider-close-{integration_id}"
+                            )))
+                            .text_color(theme.muted)
+                            .child("Close")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.provider_dialog = None;
+                                cx.notify();
+                            })),
+                    ),
+            );
+
+        if let AuthFlow::Failed { message } = &flow {
+            card = card.child(div().text_color(theme.danger).child(message.clone()));
+        }
+
+        match &dialog.method {
+            None => {
+                card = card.child(
+                    div()
+                        .text_color(theme.muted)
+                        .child("How do you want to connect?"),
+                );
+                let methods = integration
+                    .as_ref()
+                    .map(|integration| integration.methods.clone())
+                    .unwrap_or_default();
+                if methods.is_empty() {
+                    card = card.child(
+                        div()
+                            .text_color(theme.muted)
+                            .child("This integration exposes no connect method."),
+                    );
+                }
+                for (index, method) in methods.into_iter().enumerate() {
+                    let enabled = method.is_connectable();
+                    let label = method.label();
+                    let detail = if method.kind() == "env" {
+                        format!(" — set {}", method.env_names().join(", "))
+                    } else {
+                        String::new()
+                    };
+                    let chosen = method.clone();
+                    card =
+                        card.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_color(theme.muted)
+                                        .child(format!("{label}{detail}")),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "provider-method-{integration_id}-{index}"
+                                    )))
+                                    .small()
+                                    .ghost()
+                                    .label("Use")
+                                    .disabled(!enabled)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.choose_provider_method(chosen.clone());
+                                        cx.notify();
+                                    })),
+                                ),
+                        );
+                }
+            }
+            Some(IntegrationMethod::OAuth { .. }) => {
+                let attempt = flow.attempt().cloned();
+                let link = attempt
+                    .as_ref()
+                    .and_then(|attempt| attempt.url.as_deref())
+                    .filter(|url| url.starts_with("https://"))
+                    .and_then(|url| url_host(url).map(|host| (url.to_string(), host)));
+                if let Some(attempt) = &attempt {
+                    if !attempt.instructions.is_empty() {
+                        card = card.child(
+                            div()
+                                .text_color(theme.muted)
+                                .child(attempt.instructions.clone()),
+                        );
+                    }
+                    if let Some((_, host)) = &link {
+                        card = card.child(
+                            div()
+                                .text_color(theme.muted)
+                                .child(format!("Sign-in page: {host}")),
+                        );
+                    }
+                } else {
+                    card = card.child(
+                        div()
+                            .text_color(theme.muted)
+                            .child("Waiting for the server to start the sign-in…"),
+                    );
+                }
+                let mut buttons = div().flex().gap_2();
+                if let Some((url, host)) = link {
+                    buttons = buttons.child(
+                        Button::new(SharedString::from(format!(
+                            "provider-open-{integration_id}"
+                        )))
+                        .small()
+                        .primary()
+                        .label(format!("Open browser ({host})"))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.open_url(&url);
+                        })),
+                    );
+                }
+                if let Some(attempt) = &attempt {
+                    let attempt_id = attempt.attempt_id.clone();
+                    let id = integration_id.clone();
+                    buttons = buttons.child(
+                        Button::new(SharedString::from(format!(
+                            "provider-check-{integration_id}"
+                        )))
+                        .small()
+                        .ghost()
+                        .label("Check now")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.engine.poll_oauth(id.clone(), attempt_id.clone());
+                            cx.notify();
+                        })),
+                    );
+                    let attempt_id = attempt.attempt_id.clone();
+                    let id = integration_id.clone();
+                    buttons = buttons.child(
+                        Button::new(SharedString::from(format!(
+                            "provider-cancel-{integration_id}"
+                        )))
+                        .small()
+                        .danger()
+                        .label("Cancel")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.engine.cancel_oauth(id.clone(), attempt_id.clone());
+                            cx.notify();
+                        })),
+                    );
+                }
+                card = card.child(buttons);
+            }
+            Some(IntegrationMethod::Command {
+                id: method_id,
+                command,
+                ..
+            }) => {
+                let line = command.join(" ");
+                card = card.child(
+                    div()
+                        .p_2()
+                        .rounded_md()
+                        .bg(theme.surface)
+                        .child(line.clone()),
+                );
+                card = card.child(
+                    div()
+                        .text_color(theme.muted)
+                        .child("Run this command yourself. Rust Harness never executes it."),
+                );
+                if flow.is_active() {
+                    let attempt_id = flow
+                        .attempt()
+                        .map(|attempt| attempt.attempt_id.clone())
+                        .unwrap_or_default();
+                    let id = integration_id.clone();
+                    card =
+                        card.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_color(theme.muted)
+                                        .child("Waiting for the command to finish…"),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "provider-cancel-command-{integration_id}"
+                                    )))
+                                    .small()
+                                    .danger()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.engine
+                                            .cancel_command_auth(id.clone(), attempt_id.clone());
+                                        cx.notify();
+                                    })),
+                                ),
+                        );
+                } else {
+                    let copy_line = line.clone();
+                    let id = integration_id.clone();
+                    let method_id = method_id.clone();
+                    let start_line = line.clone();
+                    card =
+                        card.child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "provider-copy-command-{integration_id}"
+                                    )))
+                                    .small()
+                                    .ghost()
+                                    .label("Copy command")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_line.clone(),
+                                        ));
+                                    })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "provider-start-command-{integration_id}"
+                                    )))
+                                    .small()
+                                    .primary()
+                                    .label("I ran this command")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.engine.start_command_auth(
+                                            id.clone(),
+                                            method_id.clone(),
+                                            start_line.clone(),
+                                        );
+                                        cx.notify();
+                                    })),
+                                ),
+                        );
+                }
+            }
+            Some(IntegrationMethod::Key { .. }) => {
+                card = card.child(Input::new(&self.provider_key).w_full());
+                let has_key = !self.provider_key.read(cx).value().trim().is_empty();
+                let id = integration_id.clone();
+                card = card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "provider-send-key-{integration_id}"
+                            )))
+                            .small()
+                            .primary()
+                            .label("Send key")
+                            .disabled(!has_key)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let mut key =
+                                    this.provider_key.read(cx).value().trim().to_string();
+                                if key.is_empty() {
+                                    return;
+                                }
+                                this.engine.send_key(id.clone(), key.as_str());
+                                key.clear();
+                                this.provider_key.update(cx, |input, cx| {
+                                    input.set_value("", window, cx);
+                                });
+                                cx.notify();
+                            })),
+                        )
+                        .child(div().text_color(theme.muted).child(
+                            "The key goes only to the local OpenCode server and is cleared after sending.",
+                        )),
+                );
+            }
+            Some(IntegrationMethod::External { id: method_id, .. }) => {
+                card = card.child(div().text_color(theme.muted).child(
+                    "Credentials are managed outside Rust Harness. The server opens the provider page when it needs one.",
+                ));
+                let id = integration_id.clone();
+                let method_id = method_id.clone();
+                card = card.child(
+                    Button::new(SharedString::from(format!(
+                        "provider-external-complete-{integration_id}"
+                    )))
+                    .small()
+                    .primary()
+                    .label("Complete connection")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.engine.connect_external(id.clone(), method_id.clone());
+                        cx.notify();
+                    })),
+                );
+            }
+            Some(IntegrationMethod::Env { names }) => {
+                card = card.child(div().text_color(theme.muted).child(format!(
+                    "Set {} in the environment of the sidecar, then restart it.",
+                    names.join(", ")
+                )));
+            }
+            Some(IntegrationMethod::Unknown { kind, .. }) => {
+                card = card.child(
+                    div()
+                        .text_color(theme.muted)
+                        .child(format!("This app cannot perform the {kind} method.")),
+                );
+            }
+        }
+
+        card
     }
 
     /// Point the schedules panel at a session and load its server list.
@@ -2156,23 +2615,84 @@ impl WorkspaceView {
         }
 
         if !self.providers.is_empty() {
+            let providers = self.providers.providers().to_vec();
+            let integrations = self.providers.integrations().to_vec();
             let mut section = div()
                 .flex()
                 .flex_col()
                 .border_t_1()
                 .border_color(theme.border)
                 .child(div().px_3().py_2().text_sm().child("Providers"));
-            for provider in self.providers.providers() {
-                section = section.child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .flex()
-                        .justify_between()
-                        .text_xs()
-                        .child(provider.name.clone())
-                        .child(provider.package.clone().unwrap_or_default()),
-                );
+            for provider in providers {
+                let package = provider.package.clone().unwrap_or_default();
+                let mut row = div()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(provider.name.clone())
+                            .child(div().text_color(theme.muted).child(package)),
+                    );
+                if let Some(integration) = provider
+                    .integration_id
+                    .as_deref()
+                    .and_then(|id| integrations.iter().find(|integration| integration.id == id))
+                    .cloned()
+                {
+                    let connected = integration.has_credential();
+                    let needs_auth = integration
+                        .connections
+                        .iter()
+                        .any(|connection| connection.needs_auth());
+                    let (label, color) = if needs_auth {
+                        ("Needs auth", theme.danger)
+                    } else if connected {
+                        ("Connected", theme.success)
+                    } else if integration.has_env() {
+                        ("Env only", theme.muted)
+                    } else {
+                        ("Not connected", theme.muted)
+                    };
+                    let dialog_id = integration.id.clone();
+                    let dialog_name = integration.name.clone();
+                    row =
+                        row.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().text_color(color).child(label))
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "provider-connect-{}",
+                                        integration.id
+                                    )))
+                                    .small()
+                                    .ghost()
+                                    .label(if connected { "Reconnect" } else { "Connect" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.provider_dialog = Some(ProviderDialog::new(
+                                            dialog_id.clone(),
+                                            dialog_name.clone(),
+                                        ));
+                                        this.error = None;
+                                        cx.notify();
+                                    })),
+                                ),
+                        );
+                }
+                section = section.child(row);
+            }
+            if let Some(dialog) = self.provider_dialog.clone() {
+                section = section.child(self.render_provider_dialog(&dialog, &theme, cx));
             }
             panel = panel.child(section);
         }

@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use async_channel::{Receiver, Sender};
 use tokio::sync::oneshot;
 
+pub use features::provider::Secret;
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreateScheduleRequest, ExecutionOutcome,
     FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply,
@@ -109,6 +110,53 @@ pub enum EngineCommand {
     /// Load integrations.
     LoadIntegrations {
         request_id: u64,
+    },
+    /// Start an OAuth attempt for an integration method.
+    StartOAuth {
+        integration_id: String,
+        method_id: String,
+    },
+    /// Fetch an OAuth attempt's status once.
+    PollOAuth {
+        integration_id: String,
+        attempt_id: String,
+    },
+    /// Cancel an OAuth attempt and delete it on the server.
+    CancelOAuth {
+        integration_id: String,
+        attempt_id: String,
+    },
+    /// Supply the authorization code for an OAuth attempt.
+    CompleteOAuth {
+        integration_id: String,
+        attempt_id: String,
+        code: Option<String>,
+    },
+    /// Start a command attempt; `command` is the exact line the user approved.
+    StartCommandAuth {
+        integration_id: String,
+        method_id: String,
+        command: String,
+    },
+    /// Fetch a command attempt's status once.
+    PollCommandAuth {
+        integration_id: String,
+        attempt_id: String,
+    },
+    /// Cancel a command attempt and delete it on the server.
+    CancelCommandAuth {
+        integration_id: String,
+        attempt_id: String,
+    },
+    /// Send an API key. The key is wiped when the command is consumed.
+    SendKey {
+        integration_id: String,
+        key: Secret,
+    },
+    /// Complete an external-credential method.
+    ConnectExternal {
+        integration_id: String,
+        method_id: String,
     },
     /// Load saved permission rules for a project.
     LoadSavedPermissions {
@@ -438,6 +486,114 @@ impl Engine {
     /// Load integrations.
     pub fn load_integrations(&self, request_id: u64) -> bool {
         self.send(EngineCommand::LoadIntegrations { request_id })
+    }
+
+    /// Start an OAuth flow. The engine polls the attempt until it finishes.
+    pub fn start_oauth(
+        &self,
+        integration_id: impl Into<String>,
+        method_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::StartOAuth {
+            integration_id: integration_id.into(),
+            method_id: method_id.into(),
+        })
+    }
+
+    /// Fetch an OAuth attempt's status once.
+    pub fn poll_oauth(
+        &self,
+        integration_id: impl Into<String>,
+        attempt_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::PollOAuth {
+            integration_id: integration_id.into(),
+            attempt_id: attempt_id.into(),
+        })
+    }
+
+    /// Cancel an OAuth flow and stop its poller.
+    pub fn cancel_oauth(
+        &self,
+        integration_id: impl Into<String>,
+        attempt_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::CancelOAuth {
+            integration_id: integration_id.into(),
+            attempt_id: attempt_id.into(),
+        })
+    }
+
+    /// Supply the authorization code for an OAuth attempt.
+    pub fn complete_oauth(
+        &self,
+        integration_id: impl Into<String>,
+        attempt_id: impl Into<String>,
+        code: Option<String>,
+    ) -> bool {
+        self.send(EngineCommand::CompleteOAuth {
+            integration_id: integration_id.into(),
+            attempt_id: attempt_id.into(),
+            code,
+        })
+    }
+
+    /// Start a command auth flow. `command` must be the line shown to the user.
+    pub fn start_command_auth(
+        &self,
+        integration_id: impl Into<String>,
+        method_id: impl Into<String>,
+        command: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::StartCommandAuth {
+            integration_id: integration_id.into(),
+            method_id: method_id.into(),
+            command: command.into(),
+        })
+    }
+
+    /// Fetch a command attempt's status once.
+    pub fn poll_command_auth(
+        &self,
+        integration_id: impl Into<String>,
+        attempt_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::PollCommandAuth {
+            integration_id: integration_id.into(),
+            attempt_id: attempt_id.into(),
+        })
+    }
+
+    /// Cancel a command flow and stop its poller.
+    pub fn cancel_command_auth(
+        &self,
+        integration_id: impl Into<String>,
+        attempt_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::CancelCommandAuth {
+            integration_id: integration_id.into(),
+            attempt_id: attempt_id.into(),
+        })
+    }
+
+    /// Send an API key. The engine wipes its copy after the request.
+    pub fn send_key(&self, integration_id: impl Into<String>, key: impl Into<String>) -> bool {
+        self.send(EngineCommand::SendKey {
+            integration_id: integration_id.into(),
+            key: Secret::new(key),
+        })
+    }
+
+    /// Complete an external-credential method.
+    pub fn connect_external(
+        &self,
+        integration_id: impl Into<String>,
+        method_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::ConnectExternal {
+            integration_id: integration_id.into(),
+            method_id: method_id.into(),
+        })
     }
 
     /// Load saved permission rules for a project.

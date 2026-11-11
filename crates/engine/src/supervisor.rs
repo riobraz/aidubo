@@ -1,5 +1,6 @@
 //! The sidecar supervisor: launch, wait for readiness, run commands, stop.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
@@ -8,12 +9,13 @@ use std::time::Duration;
 use async_channel::{Receiver, Sender};
 use futures_util::StreamExt as _;
 use harness_protocol::{
-    AcceptedPrompt, CatalogKind, ModelRef, PermissionRequest, Session, SessionList, SessionMessage,
-    StreamEvent,
+    AcceptedPrompt, AttemptStatus, AuthStatus, CatalogKind, ModelRef, PermissionRequest, Session,
+    SessionList, SessionMessage, StreamEvent,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 
 use crate::api::SessionApi;
@@ -72,6 +74,31 @@ pub enum EngineEvent {
         request_id: u64,
         result: Result<Vec<harness_protocol::IntegrationInfo>, String>,
     },
+    /// An auth attempt started; the user must act when `url` or `command` is set.
+    AuthAttemptStarted {
+        integration_id: String,
+        kind: String,
+        method: String,
+        attempt_id: String,
+        url: Option<String>,
+        command: Option<String>,
+        instructions: String,
+    },
+    /// An attempt's server-reported status changed.
+    AuthAttemptUpdated {
+        integration_id: String,
+        attempt_id: String,
+        status: harness_protocol::AuthStatus,
+    },
+    /// An attempt failed, expired, timed out, or could not start.
+    AuthAttemptFailed {
+        integration_id: String,
+        message: String,
+    },
+    /// The user cancelled an attempt.
+    AuthAttemptCancelled { integration_id: String },
+    /// The server stored a credential for the integration.
+    ProviderConnected { integration_id: String },
     /// Saved permission rules.
     SavedPermissionsLoaded {
         request_id: u64,
@@ -364,11 +391,14 @@ async fn run_inner(
 
     // Populate the sidebar as soon as the engine is usable.
     let mut plugin_check_at: Option<std::time::Instant> = None;
+    let mut auth_pollers = AuthPollers::default();
     match run_command(
         &api,
         EngineCommand::ListSessions,
         &mut shutdown,
         &mut plugin_check_at,
+        events,
+        &mut auth_pollers,
     )
     .await
     {
@@ -405,7 +435,16 @@ async fn run_inner(
                     return Ok(());
                 };
 
-                match run_command(&api, command, &mut shutdown, &mut plugin_check_at).await {
+                match run_command(
+                    &api,
+                    command,
+                    &mut shutdown,
+                    &mut plugin_check_at,
+                    events,
+                    &mut auth_pollers,
+                )
+                .await
+                {
                     CommandResult::Event(event) => {
                         let _ = events.send(*event).await;
                     }
@@ -441,6 +480,146 @@ fn events(events: Vec<EngineEvent>) -> CommandResult {
     CommandResult::Events(events.into_boxed_slice())
 }
 
+const AUTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const AUTH_POLL_LIMIT: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollStep {
+    Wait,
+    Finished,
+    TimedOut,
+}
+
+fn poll_step(elapsed: Duration, status: &AuthStatus) -> PollStep {
+    match status {
+        AuthStatus::Pending | AuthStatus::Unknown(_) => {
+            if elapsed >= AUTH_POLL_LIMIT {
+                PollStep::TimedOut
+            } else {
+                PollStep::Wait
+            }
+        }
+        AuthStatus::Complete | AuthStatus::Failed | AuthStatus::Expired => PollStep::Finished,
+    }
+}
+
+fn attempt_message(status: &AttemptStatus) -> String {
+    status
+        .message
+        .clone()
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| match status.status {
+            AuthStatus::Expired => "The connection attempt expired. Start it again.".into(),
+            _ => "The connection attempt failed. Start it again.".into(),
+        })
+}
+
+fn auth_status_events(
+    integration_id: String,
+    attempt_id: String,
+    status: AttemptStatus,
+) -> CommandResult {
+    let mut batch = vec![EngineEvent::AuthAttemptUpdated {
+        integration_id: integration_id.clone(),
+        attempt_id,
+        status: status.status.clone(),
+    }];
+    match status.status {
+        AuthStatus::Complete => batch.push(EngineEvent::ProviderConnected { integration_id }),
+        AuthStatus::Failed | AuthStatus::Expired => batch.push(EngineEvent::AuthAttemptFailed {
+            integration_id,
+            message: attempt_message(&status),
+        }),
+        AuthStatus::Pending | AuthStatus::Unknown(_) => {}
+    }
+    events(batch)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttemptKind {
+    OAuth,
+    Command,
+}
+
+/// Attempt handles kept only so cancel can abort the poller immediately.
+#[derive(Default)]
+struct AuthPollers {
+    tasks: HashMap<String, JoinHandle<()>>,
+}
+
+impl AuthPollers {
+    fn track(&mut self, attempt_id: String, handle: JoinHandle<()>) {
+        if let Some(previous) = self.tasks.insert(attempt_id, handle) {
+            previous.abort();
+        }
+    }
+
+    fn stop(&mut self, attempt_id: &str) {
+        if let Some(handle) = self.tasks.remove(attempt_id) {
+            handle.abort();
+        }
+    }
+}
+
+fn spawn_attempt_poller(
+    pollers: &mut AuthPollers,
+    api: SessionApi,
+    event_tx: Sender<EngineEvent>,
+    kind: AttemptKind,
+    integration_id: String,
+    attempt_id: String,
+) {
+    let tracked = attempt_id.clone();
+    let handle = tokio::spawn(async move {
+        let started = Instant::now();
+        loop {
+            sleep(AUTH_POLL_INTERVAL).await;
+            let status = match kind {
+                AttemptKind::OAuth => api.oauth_status(&integration_id, &attempt_id).await,
+                AttemptKind::Command => api.command_status(&integration_id, &attempt_id).await,
+            };
+            let status = match status {
+                Ok(status) => status,
+                Err(message) => {
+                    let _ = event_tx
+                        .send(EngineEvent::AuthAttemptFailed {
+                            integration_id,
+                            message,
+                        })
+                        .await;
+                    return;
+                }
+            };
+            match poll_step(started.elapsed(), &status.status) {
+                PollStep::Wait => continue,
+                PollStep::TimedOut => {
+                    let _ = event_tx
+                        .send(EngineEvent::AuthAttemptFailed {
+                            integration_id,
+                            message: "The connection attempt timed out. Start it again.".into(),
+                        })
+                        .await;
+                    return;
+                }
+                PollStep::Finished => {
+                    let CommandResult::Events(batch) =
+                        auth_status_events(integration_id, attempt_id, status)
+                    else {
+                        return;
+                    };
+                    for event in batch.into_vec() {
+                        if event_tx.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    });
+    pollers.track(tracked, handle);
+}
+
 /// Pause or resume, then reload the list so `nextDueAt` is server-provided.
 async fn schedule_mutation(
     api: &SessionApi,
@@ -473,6 +652,8 @@ async fn run_command(
     command: EngineCommand,
     shutdown: &mut oneshot::Receiver<()>,
     plugin_check_at: &mut Option<std::time::Instant>,
+    event_tx: &Sender<EngineEvent>,
+    pollers: &mut AuthPollers,
 ) -> CommandResult {
     match command {
         EngineCommand::ListSessions => tokio::select! {
@@ -589,6 +770,186 @@ async fn run_command(
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.integrations() => event(EngineEvent::IntegrationsLoaded { request_id, result }),
         },
+        EngineCommand::StartOAuth {
+            integration_id,
+            method_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_method = method_id.clone();
+            let poll_api = api.clone();
+            let poll_events = event_tx.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.start_oauth(&call_integration, &call_method) => match result {
+                    Ok(attempt) if attempt.attempt_id.is_empty() => event(EngineEvent::AuthAttemptFailed {
+                        integration_id,
+                        message: "OpenCode returned an attempt without an id.".into(),
+                    }),
+                    Ok(attempt) => {
+                        spawn_attempt_poller(
+                            pollers,
+                            poll_api,
+                            poll_events,
+                            AttemptKind::OAuth,
+                            integration_id.clone(),
+                            attempt.attempt_id.clone(),
+                        );
+                        event(EngineEvent::AuthAttemptStarted {
+                            integration_id,
+                            kind: "oauth".into(),
+                            method: method_id,
+                            attempt_id: attempt.attempt_id,
+                            url: (!attempt.url.is_empty()).then_some(attempt.url),
+                            command: None,
+                            instructions: attempt.instructions,
+                        })
+                    }
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::PollOAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.oauth_status(&call_integration, &call_attempt) => match result {
+                    Ok(status) => auth_status_events(integration_id, attempt_id, status),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::CancelOAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            pollers.stop(&attempt_id);
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.cancel_oauth(&call_integration, &call_attempt) => match result {
+                    Ok(()) => event(EngineEvent::AuthAttemptCancelled { integration_id }),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::CompleteOAuth {
+            integration_id,
+            attempt_id,
+            code,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = async {
+                    api.complete_oauth(&call_integration, &call_attempt, code).await?;
+                    api.oauth_status(&call_integration, &call_attempt).await
+                } => match result {
+                    Ok(status) => auth_status_events(integration_id, attempt_id, status),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::StartCommandAuth {
+            integration_id,
+            method_id,
+            command,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_method = method_id.clone();
+            let poll_api = api.clone();
+            let poll_events = event_tx.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.start_command(&call_integration, &call_method) => match result {
+                    Ok(attempt) if attempt.attempt_id.is_empty() => event(EngineEvent::AuthAttemptFailed {
+                        integration_id,
+                        message: "OpenCode returned an attempt without an id.".into(),
+                    }),
+                    Ok(attempt) => {
+                        spawn_attempt_poller(
+                            pollers,
+                            poll_api,
+                            poll_events,
+                            AttemptKind::Command,
+                            integration_id.clone(),
+                            attempt.attempt_id.clone(),
+                        );
+                        event(EngineEvent::AuthAttemptStarted {
+                            integration_id,
+                            kind: "command".into(),
+                            method: method_id,
+                            attempt_id: attempt.attempt_id,
+                            url: None,
+                            command: Some(command),
+                            instructions: String::new(),
+                        })
+                    }
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::PollCommandAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.command_status(&call_integration, &call_attempt) => match result {
+                    Ok(status) => auth_status_events(integration_id, attempt_id, status),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::CancelCommandAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            pollers.stop(&attempt_id);
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.cancel_command(&call_integration, &call_attempt) => match result {
+                    Ok(()) => event(EngineEvent::AuthAttemptCancelled { integration_id }),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommand::SendKey {
+            integration_id,
+            key,
+        } => {
+            let call_integration = integration_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.send_key(&call_integration, &key) => event(match result {
+                    Ok(()) => EngineEvent::ProviderConnected { integration_id },
+                    Err(message) => EngineEvent::AuthAttemptFailed { integration_id, message },
+                }),
+            }
+        }
+        EngineCommand::ConnectExternal {
+            integration_id,
+            method_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_method = method_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.connect_external(&call_integration, &call_method) => event(match result {
+                    Ok(()) => EngineEvent::ProviderConnected { integration_id },
+                    Err(message) => EngineEvent::AuthAttemptFailed { integration_id, message },
+                }),
+            }
+        }
         EngineCommand::LoadSavedPermissions {
             request_id,
             project_id,
@@ -1171,4 +1532,81 @@ fn pick_port() -> io::Result<u16> {
 
 fn random_password() -> String {
     format!("{:032x}", rand::random::<u128>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_poll_stops_at_timeout() {
+        assert_eq!(
+            poll_step(
+                AUTH_POLL_LIMIT - Duration::from_secs(1),
+                &AuthStatus::Pending
+            ),
+            PollStep::Wait
+        );
+        assert_eq!(
+            poll_step(AUTH_POLL_LIMIT, &AuthStatus::Pending),
+            PollStep::TimedOut
+        );
+        assert_eq!(
+            poll_step(AUTH_POLL_LIMIT, &AuthStatus::Complete),
+            PollStep::Finished,
+            "a completed attempt wins over the elapsed cap"
+        );
+        assert_eq!(
+            poll_step(Duration::from_secs(1), &AuthStatus::Failed),
+            PollStep::Finished
+        );
+        assert_eq!(
+            poll_step(
+                Duration::from_secs(1),
+                &AuthStatus::Unknown("queued".into())
+            ),
+            PollStep::Wait
+        );
+    }
+
+    #[test]
+    fn auth_status_events_report_completion_and_failure() {
+        let completed = auth_status_events(
+            "acme".into(),
+            "att_1".into(),
+            AttemptStatus {
+                status: AuthStatus::Complete,
+                message: None,
+            },
+        );
+        let CommandResult::Events(batch) = completed else {
+            panic!("expected a batch");
+        };
+        assert!(matches!(
+            batch.as_ref(),
+            [
+                EngineEvent::AuthAttemptUpdated { .. },
+                EngineEvent::ProviderConnected { .. }
+            ]
+        ));
+
+        let failed = auth_status_events(
+            "acme".into(),
+            "att_1".into(),
+            AttemptStatus {
+                status: AuthStatus::Expired,
+                message: None,
+            },
+        );
+        let CommandResult::Events(batch) = failed else {
+            panic!("expected a batch");
+        };
+        assert!(matches!(
+            batch.as_ref(),
+            [
+                EngineEvent::AuthAttemptUpdated { .. },
+                EngineEvent::AuthAttemptFailed { message, .. }
+            ] if message.contains("expired")
+        ));
+    }
 }

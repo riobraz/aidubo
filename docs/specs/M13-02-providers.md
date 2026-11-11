@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | in-progress |
+| Status | done |
 | Wave | 1 |
 | Size | L |
 | Depends on | T0 |
@@ -38,6 +38,12 @@ compatibility, settings, headers, body}`.
 `Integration.Info` = `{id, name, metadata, methods, connections}`;
 `methods` is `OAuth | Command | Key | External | Env`; `connections` is
 `CredentialInfo | EnvInfo`.
+
+Live v2.2.7 check: `external` methods carry `id`, `label` and a `form` array of
+field keys — no URL. Command methods carry an argv array, and Key/OAuth methods
+carry a nullable form. The dialog therefore never invents a link for an
+external method; it explains that credentials are managed outside the app and
+offers only an explicit Complete action.
 
 ## 3. Protocol
 
@@ -93,9 +99,12 @@ stops and emits a timeout. The UI never polls.
 ## 7. UI
 
 Provider rows: name, package, activation, connection badge, Connect/Reconnect.
-A connect flow is a small dialog per method: OAuth shows "Open browser" and a
-cancel; Command shows the command with a copy button; Key shows a masked input
-with paste allowed and no reveal; External shows the host and a link.
+A connect flow is a small dialog per method: OAuth shows the instructions and
+"Open browser (host)" plus Check now and Cancel; Command shows the exact argv
+with Copy and requires an explicit "I ran this command" before the attempt
+starts; Key shows a masked input with paste allowed, no reveal, and clears it
+after sending; External has no server-provided URL in v2.2.7, so it states that
+credentials are managed outside the app and offers Complete.
 
 ## 8. Non-goals
 
@@ -114,16 +123,18 @@ Editing provider headers/bodies, model routing, quota display (M9-06).
 
 E2E (`tests/M13-02.rs`, no model gate): list providers and integrations on a
 fresh project and assert the arrays parse; start a `key` attempt against a
-fake integration id and assert the error is a 404-shaped message with no key
-material; cancel a non-existent attempt and assert a clean error. Real OAuth is
-a manual check recorded in `STATUS.md`.
+fake integration id and assert the error is 404-shaped with no key material;
+cancel a non-existent attempt and assert a clean terminal event (v2.2.7 answers
+the cancel with success). Real OAuth is a manual check recorded in `STATUS.md`.
 
 ## 10. Acceptance
 
-- [ ] Provider list renders with partial data.
-- [ ] No secret reaches a log, an event, or a `Debug` output.
-- [ ] Cancel stops polling within one interval.
-- [ ] External links require a click and show the host.
+- [x] Provider list renders with partial data.
+- [x] No secret reaches a log, an event, or a `Debug` output.
+- [x] Cancel stops polling within one interval.
+- [x] No external URL is rendered because the server exposes none; the dialog
+      states that credentials are managed outside the app. Any URL that is
+      rendered (OAuth) requires a click, is `https` only, and shows the host.
 
 ## 11. Risks
 
