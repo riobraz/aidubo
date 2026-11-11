@@ -282,9 +282,10 @@ Last updated: 2026-11-11
 
 ## In progress / next
 
-- M13-01, M14-01, M16-01, M16-02 and M16-03 are complete. M11-01 slice 1
-  (project list, selection, sidebar switcher, per-project sessions) is
-  implemented and verified; slices 2 and 3 are next, then M15-01.
+- M13-01, M14-01, M16-01, M16-02, M16-03 and M11-01 are complete. M11-01
+  landed in three commits: project list and selection, explicit per-command
+  directory with canonicalization rejection, and app-data persistence. M15-01
+  is next.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge. The Linux
   packaging smoke test needs a `ubuntu-24.04` runner (`make
   test-packaging-linux`).

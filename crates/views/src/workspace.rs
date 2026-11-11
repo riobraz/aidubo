@@ -1,6 +1,7 @@
 //! The M1 workspace: project-scoped sessions.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
@@ -147,6 +148,17 @@ gpui_kit::actions!(
     ]
 );
 
+/// The project list in the form the app persists: canonical paths plus the
+/// active one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectSnapshot {
+    pub projects: Vec<String>,
+    pub active: Option<String>,
+}
+
+/// Where the app sends snapshots; the view never touches the disk itself.
+pub type ProjectSink = Arc<dyn Fn(ProjectSnapshot) + Send + Sync>;
+
 /// Root view. Owns the engine handle so the child is stopped when the view is
 /// dropped at app exit.
 pub struct WorkspaceView {
@@ -156,6 +168,9 @@ pub struct WorkspaceView {
     switcher: ProjectSwitcher,
     drafts: ProjectDrafts<PromptDraft>,
     project_dir: PathBuf,
+    projects_sink: Option<ProjectSink>,
+    /// Startup notice about saved projects that could not be reopened.
+    projects_notice: Option<String>,
     /// Last command error, shown until dismissed or superseded.
     error: Option<String>,
     /// Open title editor, if any.
@@ -370,6 +385,8 @@ impl WorkspaceView {
             switcher: ProjectSwitcher::default(),
             drafts: ProjectDrafts::default(),
             project_dir,
+            projects_sink: None,
+            projects_notice: None,
             error: None,
             renaming: None,
             pending_delete: None,
@@ -437,6 +454,43 @@ impl WorkspaceView {
         }
     }
 
+    /// Merge the projects remembered from the last run. The startup project is
+    /// already selected, so adding the rest must not change it.
+    pub fn restore_saved_projects(mut self, projects: Vec<String>, notice: Option<String>) -> Self {
+        for canonical in projects {
+            self.projects.add(canonical);
+        }
+        self.projects_notice = notice;
+        self.persist_projects();
+        self
+    }
+
+    /// Attach the app-owned snapshot sink and record the current state once.
+    pub fn persist_projects_with(mut self, sink: ProjectSink) -> Self {
+        self.projects_sink = Some(sink);
+        self.persist_projects();
+        self
+    }
+
+    fn persist_projects(&self) {
+        let Some(sink) = &self.projects_sink else {
+            return;
+        };
+        let snapshot = ProjectSnapshot {
+            projects: self
+                .projects
+                .projects()
+                .iter()
+                .map(|project| project.canonical.clone())
+                .collect(),
+            active: self
+                .projects
+                .active()
+                .map(|project| project.canonical.clone()),
+        };
+        sink(snapshot);
+    }
+
     fn apply(&mut self, event: EngineEvent) {
         self.notify_from_event(&event);
         match event {
@@ -482,6 +536,7 @@ impl WorkspaceView {
                 self.project_dir = PathBuf::from(&canonical);
                 self.reset_project_scoped();
                 self.switcher.close();
+                self.persist_projects();
                 self.reload_project_scoped();
             }
             EngineEvent::SessionsLoaded { sessions } => {
@@ -1727,6 +1782,7 @@ impl WorkspaceView {
         self.project_dir = PathBuf::from(canonical);
         self.reset_project_scoped();
         self.switcher.close();
+        self.persist_projects();
         self.restore_draft(id.as_str(), "", window, cx);
         if !self.engine.select_project(self.directory(), id) {
             self.error = Some("The engine is not running.".into());
@@ -1777,6 +1833,7 @@ impl WorkspaceView {
             Ok(canonical) if canonical.is_dir() => {
                 self.projects.add(canonical.to_string_lossy().into_owned());
                 self.error = None;
+                self.persist_projects();
             }
             Ok(_) => {
                 self.error = Some(format!("{} is not a directory.", path.display()));
@@ -3781,6 +3838,15 @@ impl WorkspaceView {
                     .text_color(theme.muted)
                     .child(canonical),
             );
+
+        if let Some(notice) = &self.projects_notice {
+            section = section.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(notice.clone()),
+            );
+        }
 
         if self.switcher.is_open() {
             let mut menu = div()

@@ -8,5 +8,6 @@ mod workspace;
 pub use notify::{NotifyChannels, NotifyStatus};
 pub use project_switcher::ProjectSwitcher;
 pub use workspace::{
-    CancelOverlays, FocusComposer, NewSession, ToggleProjectSwitcher, ToggleTheme, WorkspaceView,
+    CancelOverlays, FocusComposer, NewSession, ProjectSink, ProjectSnapshot, ToggleProjectSwitcher,
+    ToggleTheme, WorkspaceView,
 };

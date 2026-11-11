@@ -3,6 +3,7 @@
 mod diagnostics;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::{Theme, TitleBar};
@@ -12,7 +13,7 @@ use harness_views::{
     CancelOverlays, FocusComposer, NewSession, NotifyChannels, ToggleProjectSwitcher, ToggleTheme,
     WorkspaceView,
 };
-use rust_harness::notify;
+use rust_harness::{notify, persistence};
 
 fn main() {
     if std::env::args().any(|arg| arg == "--diagnostics") {
@@ -23,12 +24,29 @@ fn main() {
     init_tracing();
     rust_harness::update::spawn_launch_check();
 
-    let project_dir = resolve_project_dir();
+    let restored = persistence::restore();
+    let project_dir = resolve_project_dir(&restored);
     if !project_dir.is_dir() {
         tracing::warn!(
             path = %project_dir.display(),
             "project directory does not exist; the engine will report an error"
         );
+    }
+    let saved_projects = restored.projects;
+    let saved_notice = restored.notice;
+
+    let (projects_sender, projects_receiver) = async_channel::unbounded();
+    if let Err(error) = std::thread::Builder::new()
+        .name("project-list".into())
+        .spawn(move || {
+            while let Ok(snapshot) = projects_receiver.recv_blocking() {
+                if let Err(error) = persistence::save(&snapshot) {
+                    tracing::warn!(%error, "could not persist the project list");
+                }
+            }
+        })
+    {
+        tracing::warn!(%error, "could not start the project list thread");
     }
 
     let notify_settings = notify::load_settings();
@@ -83,6 +101,12 @@ fn main() {
                     notify_channels,
                     cx,
                 )
+                .restore_saved_projects(saved_projects, saved_notice)
+                .persist_projects_with(Arc::new(move |snapshot| {
+                    if projects_sender.try_send(snapshot).is_err() {
+                        tracing::warn!("could not queue the project list for saving");
+                    }
+                }))
             })
         });
 
@@ -108,14 +132,21 @@ fn main() {
     tracing::info!("Rust Harness exited");
 }
 
-/// Project directory: positional argument, then `RUST_HARNESS_PROJECT`, then
-/// the current working directory.
-fn resolve_project_dir() -> PathBuf {
+/// Startup directory: an explicit positional argument or `RUST_HARNESS_PROJECT`
+/// wins, then the active project from the last run, then any restored project,
+/// then the current working directory.
+fn resolve_project_dir(restored: &persistence::RestoredProjects) -> PathBuf {
+    explicit_project_dir()
+        .or_else(|| restored.active.as_deref().map(PathBuf::from))
+        .or_else(|| restored.projects.first().map(PathBuf::from))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn explicit_project_dir() -> Option<PathBuf> {
     std::env::args()
         .nth(1)
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("RUST_HARNESS_PROJECT").map(PathBuf::from))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 fn init_tracing() {

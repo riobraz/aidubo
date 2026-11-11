@@ -204,7 +204,7 @@ Update this table when a node closes.
 | M10-01 vcs-status | 1 | done |
 | M10-02 diff-model | 1 | done |
 | M10-03 diff-view | 2 | done |
-| M11-01 projects | 1 | in progress |
+| M11-01 projects | 1 | done |
 | M11-02 worktrees | 2 | blocked (M11-01) |
 | M11-03 multi-run | 3 | blocked (M11-02) |
 | M12-01 goals | 2 | blocked (M9-06) |

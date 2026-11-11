@@ -1,6 +1,6 @@
 # M11-01 — Status
 
-Status: in progress
+Status: done
 Last updated: 2026-11-11
 
 ## Completed
@@ -20,9 +20,16 @@ Last updated: 2026-11-11
   non-canonical paths with `CommandFailed`, and `ARCHITECTURE.md` §5/§6.2
   describe the v2.2.7 routing.
 
+- Slice 3 (app-data persistence): implementation complete, 2026-11-11.
+  `crates/app/src/persistence.rs` stores canonical paths and the active path in
+  the app-data directory (`RUST_HARNESS_PROJECTS` overrides it for tests). At
+  launch, missing folders are dropped with a notice and the active project
+  falls back to the first remaining one. The view only supplies snapshots over
+  a sink; it never writes to disk.
+
 ## In progress / next
 
-- Slice 3: app-data persistence.
+- Nothing. M11-01 is complete; M11-02 (worktrees) is unblocked.
 
 ## Blockers
 
@@ -52,3 +59,12 @@ cargo clippy --workspace --all-targets -- -D warnings                ok
 The canonicalization rule is covered by the supervisor unit test
 `command_directories_must_be_canonical_and_exist` and by the symlink case in
 `tests/M11-01.rs`.
+
+Slice 3:
+
+```text
+cargo test -p rust-harness --lib persistence                            ok (5)
+cargo test --workspace                                                 ok
+cargo fmt --all -- --check                                             ok
+cargo clippy --workspace --all-targets -- -D warnings                  ok
+```

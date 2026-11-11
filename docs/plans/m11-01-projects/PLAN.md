@@ -1,6 +1,6 @@
 # M11-01 — Multiple projects and location routing
 
-Status: in progress · 2026-11-11
+Status: done · 2026-11-11
 
 ## Goal
 
@@ -48,7 +48,7 @@ Three slices, each with its own commit:
 - [x] `tests/M11-01.rs`: two projects, crossed lists, restart durability.
 - [x] Slice 2: explicit directory on every project-scoped command.
 - [x] Slice 2: canonicalization rejection and `ARCHITECTURE.md` §5/§6.2.
-- [ ] Slice 3: app-data persistence and missing-path notice.
+- [x] Slice 3: app-data persistence and missing-path notice.
 
 ## Test plan
 
@@ -61,6 +61,8 @@ Three slices, each with its own commit:
 | engine | `list_sessions_scopes_by_directory` |
 | engine | `create_session_pins_directory` |
 | engine e2e | `tests/M11-01.rs` |
+| app | `project_list_round_trips_with_active` |
+| app | `missing_project_is_dropped_with_a_notice` |
 
 Manual: switch between two folders, create a session in each, restart the app.
 The build must also keep single-project behavior working.
