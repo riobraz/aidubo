@@ -74,6 +74,27 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Load MCP servers.
+    LoadMcp {
+        request_id: u64,
+    },
+    /// Add or replace an MCP server at runtime.
+    AddMcp {
+        name: String,
+        config: serde_json::Value,
+    },
+    /// Remove an MCP server.
+    RemoveMcp {
+        name: String,
+    },
+    /// Connect an MCP server.
+    ConnectMcp {
+        name: String,
+    },
+    /// Disconnect an MCP server.
+    DisconnectMcp {
+        name: String,
+    },
     /// Load installed plugins.
     LoadPlugins {
         request_id: u64,
@@ -304,6 +325,34 @@ impl Engine {
             title: title.into(),
             fields,
         })
+    }
+
+    /// Load MCP servers.
+    pub fn load_mcp(&self, request_id: u64) -> bool {
+        self.send(EngineCommand::LoadMcp { request_id })
+    }
+
+    /// Add or replace an MCP server at runtime.
+    pub fn add_mcp(&self, name: impl Into<String>, config: serde_json::Value) -> bool {
+        self.send(EngineCommand::AddMcp {
+            name: name.into(),
+            config,
+        })
+    }
+
+    /// Remove an MCP server.
+    pub fn remove_mcp(&self, name: impl Into<String>) -> bool {
+        self.send(EngineCommand::RemoveMcp { name: name.into() })
+    }
+
+    /// Connect an MCP server.
+    pub fn connect_mcp(&self, name: impl Into<String>) -> bool {
+        self.send(EngineCommand::ConnectMcp { name: name.into() })
+    }
+
+    /// Disconnect an MCP server.
+    pub fn disconnect_mcp(&self, name: impl Into<String>) -> bool {
+        self.send(EngineCommand::DisconnectMcp { name: name.into() })
     }
 
     /// Load installed plugins.

@@ -100,11 +100,17 @@ Last updated: 2026-11-10
   `POST /api/vcs/init` with `Unknown VCS provider`; the M10-01 test records the
   message instead of claiming the endpoint works.
 
+- 2026-11-10 — **M13-01 data + list.** `McpServer` with five status labels and
+  unknown fallback (2 tests), `McpStore` (2 tests), `LoadMcp` plus
+  Add/Remove/Connect/Disconnect commands and API; the MCP section lists servers
+  and removes with a two-step confirmation. Missing: the add-server form and
+  the runtime-restart caveat.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M13-04: update action + rate limit. Then M13-01, M13-03, M13-02, M12-02,
-  M12-03, M14-01, M16-01…03, M11-01, M15-01.
+- M13-01: add-server form + caveat. Then M13-03, M13-02, M12-02, M12-03,
+  M14-01, M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

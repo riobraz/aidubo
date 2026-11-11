@@ -46,6 +46,13 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// MCP servers.
+    McpLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::McpServer>, String>,
+    },
+    /// An MCP mutation finished; the UI reloads the list.
+    McpChanged { name: String },
     /// Installed plugins.
     PluginsLoaded {
         request_id: u64,
@@ -435,6 +442,46 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadMcp { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.mcp_servers() => event(EngineEvent::McpLoaded { request_id, result }),
+        },
+        EngineCommand::AddMcp { name, config } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.add_mcp(&name, config) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not add the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommand::RemoveMcp { name } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.remove_mcp(&name) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not remove the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommand::ConnectMcp { name } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.connect_mcp(&name) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not connect the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommand::DisconnectMcp { name } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.disconnect_mcp(&name) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not disconnect the MCP server: {message}"),
+                }),
+            },
+        },
         EngineCommand::LoadPlugins { request_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.plugins() => event(EngineEvent::PluginsLoaded { request_id, result }),

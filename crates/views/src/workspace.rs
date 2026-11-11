@@ -12,10 +12,10 @@ use gpui_kit::component::{
 use gpui_kit::*;
 use harness_core::{
     Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
-    InboxStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState,
-    PluginStore, PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus,
-    TranscriptStore, UsageStore, VcsStore, flatten, now_ms, parse_patch, path_to_file_uri,
-    relative_time, visible_range,
+    InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind,
+    PickerState, PluginStore, PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall,
+    ToolStatus, TranscriptStore, UsageStore, VcsStore, flatten, now_ms, parse_patch,
+    path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -114,6 +114,8 @@ pub struct WorkspaceView {
     usage: UsageStore,
     plugins: PluginStore,
     pending_plugin_update: Option<String>,
+    mcp: McpStore,
+    pending_mcp_remove: Option<String>,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -219,6 +221,8 @@ impl WorkspaceView {
             usage: UsageStore::default(),
             plugins: PluginStore::default(),
             pending_plugin_update: None,
+            mcp: McpStore::default(),
+            pending_mcp_remove: None,
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -253,6 +257,7 @@ impl WorkspaceView {
                 self.request_vcs_status();
                 self.engine.load_usage_limits(1);
                 self.engine.load_plugins(1);
+                self.engine.load_mcp(1);
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -283,6 +288,14 @@ impl WorkspaceView {
                     // the newly selected session's timeline.
                     self.follow_selection();
                 }
+            }
+            EngineEvent::McpLoaded { result, .. } => {
+                if let Ok(servers) = result {
+                    self.mcp.replace(servers);
+                }
+            }
+            EngineEvent::McpChanged { .. } => {
+                self.engine.load_mcp(2);
             }
             EngineEvent::PluginsLoaded { result, .. } => {
                 if let Ok(plugins) = result {
@@ -1556,6 +1569,48 @@ impl WorkspaceView {
                     );
                 }
                 section = section.child(row);
+            }
+            panel = panel.child(section);
+        }
+
+        if !self.mcp.is_empty() {
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(div().px_3().py_2().text_sm().child("MCP"));
+            for server in self.mcp.rows() {
+                let name = server.name.clone();
+                let pending = self.pending_mcp_remove.as_deref() == Some(name.as_str());
+                section = section.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .justify_between()
+                        .text_xs()
+                        .child(name.clone())
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("mcp-remove-{name}")))
+                                .text_color(if pending { theme.danger } else { theme.muted })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.pending_mcp_remove.as_deref() == Some(name.as_str()) {
+                                        this.engine.remove_mcp(name.clone());
+                                        this.pending_mcp_remove = None;
+                                    } else {
+                                        this.pending_mcp_remove = Some(name.clone());
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(if pending {
+                                    "Confirm".to_string()
+                                } else {
+                                    server.status.clone()
+                                }),
+                        ),
+                );
             }
             panel = panel.child(section);
         }

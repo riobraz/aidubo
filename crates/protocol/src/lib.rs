@@ -12,6 +12,7 @@
 mod diff;
 mod form;
 mod inbox;
+mod mcp;
 mod plugin;
 mod revert;
 mod usage;
@@ -20,6 +21,7 @@ mod vcs;
 pub use diff::*;
 pub use form::*;
 pub use inbox::*;
+pub use mcp::*;
 pub use plugin::*;
 pub use revert::*;
 pub use usage::*;
