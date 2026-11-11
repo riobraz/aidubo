@@ -13,9 +13,9 @@ use gpui_kit::*;
 use harness_core::{
     Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
     InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind,
-    PickerState, PluginStore, PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall,
-    ToolStatus, TranscriptStore, UsageStore, VcsStore, flatten, now_ms, parse_patch,
-    path_to_file_uri, relative_time, visible_range,
+    PickerState, PluginStore, PromptDraft, RevertStore, SNIPPETS, SavedPermissionStore,
+    SessionStore, ToolCall, ToolStatus, TranscriptStore, UsageStore, VcsStore, flatten, now_ms,
+    parse_patch, path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -115,6 +115,8 @@ pub struct WorkspaceView {
     plugins: PluginStore,
     pending_plugin_update: Option<String>,
     mcp: McpStore,
+    saved_permissions: SavedPermissionStore,
+    pending_saved_permission: Option<String>,
     pending_mcp_remove: Option<String>,
     mcp_add_open: bool,
     mcp_name: Entity<InputState>,
@@ -229,6 +231,8 @@ impl WorkspaceView {
             plugins: PluginStore::default(),
             pending_plugin_update: None,
             mcp: McpStore::default(),
+            saved_permissions: SavedPermissionStore::default(),
+            pending_saved_permission: None,
             pending_mcp_remove: None,
             mcp_add_open: false,
             mcp_name,
@@ -297,6 +301,17 @@ impl WorkspaceView {
                     // First load (or the selected session disappeared): open
                     // the newly selected session's timeline.
                     self.follow_selection();
+                }
+            }
+            EngineEvent::SavedPermissionsLoaded { result, .. } => {
+                if let Ok(rules) = result {
+                    self.saved_permissions.replace(rules);
+                }
+            }
+            EngineEvent::SavedPermissionDeleted { id, result } => {
+                self.pending_saved_permission = None;
+                if result.is_ok() {
+                    self.saved_permissions.remove(&id);
                 }
             }
             EngineEvent::McpLoaded { result, .. } => {
@@ -369,7 +384,14 @@ impl WorkspaceView {
                 self.engine.load_permissions(id.clone());
                 self.inbox.begin(&id);
                 self.engine.load_inbox(id.clone());
-                self.engine.load_forms(id);
+                self.engine.load_forms(id.clone());
+                if let Some(project_id) = self
+                    .sessions
+                    .selected()
+                    .and_then(|session| session.project_id.clone())
+                {
+                    self.engine.load_saved_permissions(1, project_id);
+                }
             }
             EngineEvent::SessionRenamed { id, title } => {
                 self.sessions.rename(&id, title);
@@ -1677,6 +1699,45 @@ impl WorkspaceView {
                                 } else {
                                     server.status.clone()
                                 }),
+                        ),
+                );
+            }
+            panel = panel.child(section);
+        }
+
+        if !self.saved_permissions.is_empty() {
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(div().px_3().py_2().text_sm().child("Permissions"));
+            for rule in self.saved_permissions.rules() {
+                let id = rule.id.clone();
+                let pending = self.pending_saved_permission.as_deref() == Some(id.as_str());
+                section = section.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .flex()
+                        .justify_between()
+                        .text_xs()
+                        .child(format!("{} · {}", rule.action, rule.resource))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("saved-perm-revoke-{id}")))
+                                .text_color(if pending { theme.danger } else { theme.muted })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.pending_saved_permission.as_deref() == Some(id.as_str())
+                                    {
+                                        this.engine.delete_saved_permission(id.clone());
+                                        this.pending_saved_permission = None;
+                                    } else {
+                                        this.pending_saved_permission = Some(id.clone());
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(if pending { "Confirm" } else { "Revoke" }),
                         ),
                 );
             }

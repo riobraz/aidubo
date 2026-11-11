@@ -46,6 +46,16 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// Saved permission rules.
+    SavedPermissionsLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::SavedPermission>, String>,
+    },
+    /// A saved rule was revoked.
+    SavedPermissionDeleted {
+        id: String,
+        result: Result<(), String>,
+    },
     /// MCP servers.
     McpLoaded {
         request_id: u64,
@@ -442,6 +452,21 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadSavedPermissions {
+            request_id,
+            project_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.saved_permissions(&project_id) => {
+                event(EngineEvent::SavedPermissionsLoaded { request_id, result })
+            }
+        },
+        EngineCommand::DeleteSavedPermission { id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.delete_saved_permission(&id) => {
+                event(EngineEvent::SavedPermissionDeleted { id, result })
+            }
+        },
         EngineCommand::LoadMcp { request_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.mcp_servers() => event(EngineEvent::McpLoaded { request_id, result }),

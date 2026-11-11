@@ -74,6 +74,15 @@ pub enum EngineCommand {
         title: String,
         fields: serde_json::Value,
     },
+    /// Load saved permission rules for a project.
+    LoadSavedPermissions {
+        request_id: u64,
+        project_id: String,
+    },
+    /// Revoke a saved permission rule.
+    DeleteSavedPermission {
+        id: String,
+    },
     /// Load MCP servers.
     LoadMcp {
         request_id: u64,
@@ -325,6 +334,19 @@ impl Engine {
             title: title.into(),
             fields,
         })
+    }
+
+    /// Load saved permission rules for a project.
+    pub fn load_saved_permissions(&self, request_id: u64, project_id: impl Into<String>) -> bool {
+        self.send(EngineCommand::LoadSavedPermissions {
+            request_id,
+            project_id: project_id.into(),
+        })
+    }
+
+    /// Revoke a saved permission rule.
+    pub fn delete_saved_permission(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::DeleteSavedPermission { id: id.into() })
     }
 
     /// Load MCP servers.

@@ -107,12 +107,17 @@ Last updated: 2026-11-10
   the runtime-restart caveat. The add form (name + JSON) with validation and
   the caveat line is now in the MCP section.
 
+- 2026-11-10 — **M13-03 done.** `SavedPermission` (2 tests), store sorted with
+  idempotent removal (2 tests), `LoadSavedPermissions`/`DeleteSavedPermission`,
+  a Permissions section with two-step Revoke, and an e2e that loads the rules
+  for the session's project.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- M13-01 is feature-complete; only the "tools available in a new turn" check
-  is unverified. Then M13-03, M13-02, M12-02, M12-03, M14-01, M16-01…03,
-  M11-01, M15-01.
+- M13-01 is feature-complete; only the tools-in-a-new-turn check is
+  unverified. Next: M13-02 (providers/auth), M12-02, M12-03, M14-01,
+  M16-01…03, M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

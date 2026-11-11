@@ -238,7 +238,7 @@
         "T0"
       ],
       "e2e": "tests/M13-03.rs @ RUST_HARNESS_MOCK_PERMISSION_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M13-04",

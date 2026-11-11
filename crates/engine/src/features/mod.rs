@@ -12,6 +12,7 @@ pub(crate) mod permissions;
 pub(crate) mod plugin;
 pub(crate) mod prompt;
 pub(crate) mod revert;
+pub(crate) mod saved_permissions;
 pub(crate) mod sessions;
 pub(crate) mod transcript;
 pub(crate) mod usage;
