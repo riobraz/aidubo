@@ -260,6 +260,30 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
                 outcome: ExecutionOutcome::Interrupted,
             }
         }
+        "session.compaction.started" => {
+            let data: SessionData = serde_json::from_value(data).ok()?;
+            StreamEvent::CompactionStarted {
+                session_id: data.session_id,
+            }
+        }
+        "session.compaction.ended" => {
+            let data: SessionData = serde_json::from_value(data).ok()?;
+            StreamEvent::CompactionEnded {
+                session_id: data.session_id,
+            }
+        }
+        "session.compaction.failed" => {
+            let data: ExecutionFailedData = serde_json::from_value(data).ok()?;
+            let message = data
+                .error
+                .filter(|error| !error.message.is_empty())
+                .map(|error| error.message)
+                .unwrap_or_else(|| "Compaction failed.".to_string());
+            StreamEvent::CompactionFailed {
+                session_id: data.session_id,
+                message,
+            }
+        }
         "filesystem.changed" => StreamEvent::FilesystemChanged,
         "session.usage.updated" | "session.usage.recorded" => {
             let data: UsageEventData = serde_json::from_value(data).ok()?;

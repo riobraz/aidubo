@@ -757,6 +757,19 @@ pub enum StreamEvent {
         request_id: String,
         reply: PermissionReply,
     },
+    /// The agent started compacting the session.
+    CompactionStarted {
+        session_id: String,
+    },
+    /// Compaction finished.
+    CompactionEnded {
+        session_id: String,
+    },
+    /// Compaction failed.
+    CompactionFailed {
+        session_id: String,
+        message: String,
+    },
     /// The session's token and cost totals changed.
     UsageUpdated {
         session_id: String,
@@ -789,6 +802,9 @@ impl StreamEvent {
             | Self::ToolFailed { session_id, .. }
             | Self::PermissionReplied { session_id, .. } => session_id,
             Self::PermissionAsked { request } => &request.session_id,
+            Self::CompactionStarted { session_id }
+            | Self::CompactionEnded { session_id }
+            | Self::CompactionFailed { session_id, .. } => session_id,
             Self::UsageUpdated { session_id, .. } => session_id,
             Self::FilesystemChanged => "",
         }

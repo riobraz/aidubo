@@ -11,10 +11,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    Content, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore, InboxStore,
-    ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState, PromptDraft,
-    RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore, VcsStore, flatten,
-    now_ms, parse_patch, path_to_file_uri, relative_time, visible_range,
+    Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
+    InboxStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState,
+    PromptDraft, RevertStore, SNIPPETS, SessionStore, ToolCall, ToolStatus, TranscriptStore,
+    VcsStore, flatten, now_ms, parse_patch, path_to_file_uri, relative_time, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -109,6 +109,7 @@ pub struct WorkspaceView {
     inbox: InboxStore,
     forms: FormStore,
     revert: RevertStore,
+    context: ContextStore,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -210,6 +211,7 @@ impl WorkspaceView {
             inbox: InboxStore::default(),
             forms: FormStore::default(),
             revert: RevertStore::default(),
+            context: ContextStore::default(),
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -262,6 +264,9 @@ impl WorkspaceView {
             EngineEvent::SessionsLoaded { sessions } => {
                 let previous = self.sessions.selected_id().map(str::to_owned);
                 self.sessions.replace(sessions);
+                if let Some(session) = self.sessions.selected() {
+                    self.apply_session_usage(&session.clone());
+                }
                 let current = self.sessions.selected_id().map(str::to_owned);
                 self.error = None;
                 if previous != current {
@@ -295,6 +300,7 @@ impl WorkspaceView {
                 self.inbox.replace(&session_id, items);
             }
             EngineEvent::SessionForked { session } => {
+                self.apply_session_usage(&session);
                 let id = session.id.clone();
                 self.sessions.upsert(session);
                 self.sessions.select(&id);
@@ -304,6 +310,7 @@ impl WorkspaceView {
                 self.engine.load_permissions(&id);
             }
             EngineEvent::SessionCreated { session } => {
+                self.apply_session_usage(&session);
                 let id = session.id.clone();
                 self.sessions.upsert(session);
                 self.sessions.select(&id);
@@ -406,7 +413,14 @@ impl WorkspaceView {
             },
             EngineEvent::Stream(event) => match event {
                 StreamEvent::FilesystemChanged => self.on_filesystem_changed(),
-                StreamEvent::UsageUpdated { .. } => {}
+                StreamEvent::UsageUpdated { tokens, cost, .. } => {
+                    self.context.set_usage(tokens, cost);
+                }
+                StreamEvent::CompactionStarted { .. } => self.context.begin_compaction(),
+                StreamEvent::CompactionEnded { .. } => self.context.finish_compaction(),
+                StreamEvent::CompactionFailed { message, .. } => {
+                    self.context.fail_compaction(message)
+                }
                 StreamEvent::PermissionAsked { request } => {
                     self.permissions.push(request);
                 }
@@ -637,6 +651,12 @@ impl WorkspaceView {
     }
 
     /// Close transient overlays (title editor, delete confirmation, errors).
+    fn apply_session_usage(&mut self, session: &Session) {
+        if let Some(tokens) = session.tokens {
+            self.context.set_usage(tokens, session.cost);
+        }
+    }
+
     fn revert_from(&mut self, message_id: String) {
         let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
             self.error = Some("Select a session first.".into());
@@ -1282,6 +1302,52 @@ impl WorkspaceView {
                         .child("Dismiss"),
                 ),
         )
+    }
+
+    fn render_context_meter(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let used = self.context.usage().used();
+        let cost = self.context.usage().cost.unwrap_or(0.0);
+        let compacting = self.context.compaction() != harness_core::CompactionState::Idle;
+        div()
+            .id("context-meter")
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .text_xs()
+            .text_color(theme.muted)
+            .child(if used > 0.0 {
+                format!("{used:.0} tokens · ${cost:.2}")
+            } else {
+                "context unknown".to_string()
+            })
+            .child(
+                div()
+                    .id("compact-now")
+                    .px_2()
+                    .py_1()
+                    .bg(if compacting {
+                        theme.border
+                    } else {
+                        theme.surface
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.context.compaction() != harness_core::CompactionState::Idle {
+                            return;
+                        }
+                        if let Some(id) = this.sessions.selected_id().map(str::to_owned) {
+                            this.context.begin_compaction();
+                            this.engine.compact(id);
+                        }
+                        cx.notify();
+                    }))
+                    .child(if compacting {
+                        "Compacting…"
+                    } else {
+                        "Compact"
+                    }),
+            )
     }
 
     fn render_inbox(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1946,6 +2012,7 @@ impl WorkspaceView {
         if !self.inbox.is_empty() {
             pane = pane.child(self.render_inbox(theme, cx));
         }
+        pane = pane.child(self.render_context_meter(theme, cx));
         pane.child(self.composer_bar(theme, cx))
     }
 
@@ -2356,6 +2423,7 @@ impl WorkspaceView {
     fn composer_bar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.transcript.is_busy();
         let ready = self.status.is_ready() && self.sessions.selected_id().is_some();
+
         let model_label = self
             .sessions
             .selected()

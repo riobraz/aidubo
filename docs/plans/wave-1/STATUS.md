@@ -82,11 +82,16 @@ Last updated: 2026-11-10
   Revert/Cancel. Committed reverts reload the transcript; a GPUI test covers
   stage → cancel.
 
+- 2026-11-10 — **M9-04 done.** Usage from the session snapshot and
+  `session.usage.updated`; meter above the composer with tokens/cost and a
+  Compact button; compaction events drive the state. E2E compacts and then
+  proves the session still answers a prompt.
+
 ## In progress / next
 
 - M10 is complete (M10-01, M10-02, M10-03).
-- Next: M9-04 (compaction/context), M9-06 (usage), integrations, automation,
-  PTY, distribution and projects.
+- Next: M9-06 (usage limits), then integrations, automation, PTY,
+  distribution and projects.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers

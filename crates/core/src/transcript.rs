@@ -427,7 +427,10 @@ impl TranscriptStore {
             StreamEvent::PermissionAsked { .. }
             | StreamEvent::PermissionReplied { .. }
             | StreamEvent::FilesystemChanged
-            | StreamEvent::UsageUpdated { .. } => false,
+            | StreamEvent::UsageUpdated { .. }
+            | StreamEvent::CompactionStarted { .. }
+            | StreamEvent::CompactionEnded { .. }
+            | StreamEvent::CompactionFailed { .. } => false,
         }
     }
 
