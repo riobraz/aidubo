@@ -2,9 +2,22 @@
 
 Status: in progress
 
-Last updated: 2026-11-10
+Last updated: 2026-11-11
 
 ## Completed
+
+- 2026-11-11 — **M12-02 done.** Typed `ScheduleWhen`/`ScheduleStatus`/
+  `ScheduleOutcome` with unknown-value fallbacks; `ScheduleStore` ordered by
+  `nextDueAt` then creation, with upsert, finished-row filtering, local
+  duration validation and 400-character failure reasons (6 tests);
+  `LoadSchedules`/`CreateSchedule`/`PauseSchedule`/`ResumeSchedule`/
+  `DeleteSchedule` commands, mutation events, and a server list reload after
+  every write so `nextDueAt` is authoritative; Schedules panel with the
+  sidecar caveat, add form, Pause/Resume and two-step Delete; e2e creates a
+  relative schedule, waits for it to fire, then pauses, resumes and deletes a
+  recurring one. Verified against opencode v2.2.7: the endpoint requires
+  `experimental.schedules` in the project config, pause/resume return the
+  updated `Schedule.Info`, and delete is 204.
 
 - 2026-11-10 — **M10-02 done.** `FileDiff` in `harness-protocol`;
   `harness_core::parse_patch` with hunks, renames, add/delete, binary, CRLF,
@@ -119,23 +132,25 @@ Last updated: 2026-11-10
 
 ## In progress / next
 
-- M10 is complete (M10-01, M10-02, M10-03).
-- M13-02: auth flows + security review. Then M12-02, M12-03, M14-01,
-  M16-01…03, M11-01, M15-01.
+- M10 is complete (M10-01, M10-02, M10-03) and M12-02 is complete.
+- M13-02: auth flows + security review. Then M12-03, M14-01, M16-01…03,
+  M11-01, M15-01.
 - Gate G1 has not run; the branch `wave-1` is not ready to merge.
 
 ## Blockers
 
-None technical. Remaining work is volume: 20 of 21 nodes.
+None technical. Remaining work is volume: 19 of 21 nodes.
 
 ## Verification
 
-Per node. M10-02:
+Per node. M12-02:
 
 ```sh
-cargo test -p harness-core           45 passed
-cargo test -p harness-protocol       16 passed
-cargo test -p harness-engine --test M10-02   1 passed
-cargo test -p harness-engine --test M10-01   2 passed
-cargo test --workspace                       121 passed
+cargo test -p harness-protocol                   47 passed
+cargo test -p harness-core                       84 passed
+cargo test -p harness-engine --lib               19 passed
+cargo test -p harness-engine --test M12-02       1 passed
+cargo test --workspace                           204 passed
+cargo clippy --workspace --all-targets -- -D warnings   clean
+cargo fmt --all -- --check                       clean
 ```

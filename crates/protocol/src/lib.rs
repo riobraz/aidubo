@@ -17,6 +17,7 @@ mod permission_saved;
 mod plugin;
 mod provider;
 mod revert;
+mod schedule;
 mod usage;
 mod vcs;
 
@@ -28,6 +29,7 @@ pub use permission_saved::*;
 pub use plugin::*;
 pub use provider::*;
 pub use revert::*;
+pub use schedule::*;
 pub use usage::*;
 pub use vcs::*;
 

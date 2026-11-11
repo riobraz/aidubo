@@ -182,7 +182,7 @@
         "T0"
       ],
       "e2e": "tests/M12-02.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M12-03",

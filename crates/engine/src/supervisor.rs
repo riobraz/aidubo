@@ -46,6 +46,22 @@ pub enum EngineEvent {
         session_id: String,
         forms: Vec<harness_protocol::FormInfo>,
     },
+    /// Schedules for a session.
+    SchedulesLoaded {
+        request_id: u64,
+        session_id: String,
+        result: Result<Vec<harness_protocol::ScheduleInfo>, String>,
+    },
+    /// A schedule was created on the server.
+    ScheduleCreated {
+        schedule: harness_protocol::ScheduleInfo,
+    },
+    /// A schedule was paused, resumed, or refreshed.
+    ScheduleChanged {
+        schedule: harness_protocol::ScheduleInfo,
+    },
+    /// A schedule was deleted on the server.
+    ScheduleDeleted { id: String },
     /// Providers.
     ProvidersLoaded {
         request_id: u64,
@@ -359,6 +375,11 @@ async fn run_inner(
         CommandResult::Event(event) => {
             let _ = events.send(*event).await;
         }
+        CommandResult::Events(batch) => {
+            for event in batch.into_vec() {
+                let _ = events.send(event).await;
+            }
+        }
         CommandResult::Shutdown => {
             stop(&mut child).await;
             let _ = events.send(EngineEvent::Stopped).await;
@@ -388,6 +409,11 @@ async fn run_inner(
                     CommandResult::Event(event) => {
                         let _ = events.send(*event).await;
                     }
+                    CommandResult::Events(batch) => {
+                        for event in batch.into_vec() {
+                            let _ = events.send(event).await;
+                        }
+                    }
                     CommandResult::Shutdown => {
                         stop(&mut child).await;
                         let _ = events.send(EngineEvent::Stopped).await;
@@ -402,11 +428,44 @@ async fn run_inner(
 enum CommandResult {
     /// Boxed to keep the transient result small next to `Shutdown`.
     Event(Box<EngineEvent>),
+    /// A mutation plus the authoritative list reload that follows it.
+    Events(Box<[EngineEvent]>),
     Shutdown,
 }
 
 fn event(event: EngineEvent) -> CommandResult {
     CommandResult::Event(Box::new(event))
+}
+
+fn events(events: Vec<EngineEvent>) -> CommandResult {
+    CommandResult::Events(events.into_boxed_slice())
+}
+
+/// Pause or resume, then reload the list so `nextDueAt` is server-provided.
+async fn schedule_mutation(
+    api: &SessionApi,
+    shutdown: &mut oneshot::Receiver<()>,
+    request_id: u64,
+    session_id: String,
+    schedule_id: String,
+    action: &str,
+) -> CommandResult {
+    tokio::select! {
+        _ = &mut *shutdown => CommandResult::Shutdown,
+        result = async {
+            let schedule = api.schedule_action(&schedule_id, action).await?;
+            let schedules = api.schedules(&session_id).await;
+            Ok::<_, String>((schedule, schedules))
+        } => match result {
+            Ok((schedule, schedules)) => events(vec![
+                EngineEvent::ScheduleChanged { schedule },
+                EngineEvent::SchedulesLoaded { request_id, session_id, result: schedules },
+            ]),
+            Err(message) => event(EngineEvent::CommandFailed {
+                message: format!("Could not {action} the schedule: {message}"),
+            }),
+        },
+    }
 }
 
 async fn run_command(
@@ -462,6 +521,66 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommand::LoadSchedules {
+            request_id,
+            session_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.schedules(&session_id) => {
+                event(EngineEvent::SchedulesLoaded { request_id, session_id, result })
+            }
+        },
+        EngineCommand::CreateSchedule {
+            request_id,
+            request,
+        } => {
+            let session_id = request.session_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = async {
+                    let schedule = api.create_schedule(*request).await?;
+                    let schedules = api.schedules(&session_id).await;
+                    Ok::<_, String>((schedule, schedules))
+                } => match result {
+                    Ok((schedule, schedules)) => events(vec![
+                        EngineEvent::ScheduleCreated { schedule },
+                        EngineEvent::SchedulesLoaded { request_id, session_id, result: schedules },
+                    ]),
+                    Err(message) => event(EngineEvent::CommandFailed {
+                        message: format!("Could not create the schedule: {message}"),
+                    }),
+                },
+            }
+        }
+        EngineCommand::PauseSchedule {
+            request_id,
+            session_id,
+            schedule_id,
+        } => schedule_mutation(api, shutdown, request_id, session_id, schedule_id, "pause").await,
+        EngineCommand::ResumeSchedule {
+            request_id,
+            session_id,
+            schedule_id,
+        } => schedule_mutation(api, shutdown, request_id, session_id, schedule_id, "resume").await,
+        EngineCommand::DeleteSchedule {
+            request_id,
+            session_id,
+            schedule_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                api.delete_schedule(&schedule_id).await?;
+                api.schedules(&session_id).await
+            } => match result {
+                Ok(schedules) => events(vec![
+                    EngineEvent::ScheduleDeleted { id: schedule_id },
+                    EngineEvent::SchedulesLoaded { request_id, session_id, result: Ok(schedules) },
+                ]),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not delete the schedule: {message}"),
+                }),
+            },
+        },
         EngineCommand::LoadProviders { request_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.providers() => event(EngineEvent::ProvidersLoaded { request_id, result }),

@@ -45,6 +45,18 @@ impl TestProject {
     pub fn use_mock_provider(&self, base_url: &str) {
         self.write("opencode.json", &provider_config(base_url));
     }
+
+    /// Enable the experimental schedules endpoint in the project config.
+    /// `opencode.json` must already exist (for example after
+    /// [`Self::use_mock_provider`]).
+    pub fn enable_schedules(&self) {
+        let path = self.path.join("opencode.json");
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+        let mut config: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse opencode.json");
+        config["experimental"] = serde_json::json!({ "schedules": true });
+        std::fs::write(&path, config.to_string()).expect("write opencode.json");
+    }
 }
 
 impl Drop for TestProject {

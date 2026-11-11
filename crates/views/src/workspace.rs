@@ -14,13 +14,14 @@ use harness_core::{
     Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry, FormStore,
     InboxStore, McpStore, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind,
     PickerState, PluginStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
-    SavedPermissionStore, SessionStore, ToolCall, ToolStatus, TranscriptStore, UsageStore,
-    VcsStore, flatten, now_ms, parse_patch, path_to_file_uri, relative_time, visible_range,
+    SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus, TranscriptStore,
+    UsageStore, VcsStore, describe_when, failure_reason, flatten, next_run_label, now_ms,
+    parse_patch, path_to_file_uri, relative_time, validate_duration, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
-    AgentInfo, CommandInfo, FileDiff, InboxDelivery, ModelInfo, PermissionRequest, Session,
-    SkillInfo,
+    AgentInfo, CommandInfo, CreateScheduleRequest, FileDiff, InboxDelivery, ModelInfo,
+    PermissionRequest, ScheduleStatus, ScheduleWhen, Session, SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
 
@@ -117,6 +118,16 @@ pub struct WorkspaceView {
     mcp: McpStore,
     saved_permissions: SavedPermissionStore,
     providers: ProviderStore,
+    schedules: ScheduleStore,
+    schedules_session: Option<String>,
+    show_finished_schedules: bool,
+    schedule_form_open: bool,
+    schedule_kind: usize,
+    schedule_prompt: Entity<InputState>,
+    schedule_when: Entity<InputState>,
+    schedule_ends: Entity<InputState>,
+    pending_schedule_delete: Option<String>,
+    schedule_request: u64,
     pending_saved_permission: Option<String>,
     pending_mcp_remove: Option<String>,
     mcp_add_open: bool,
@@ -182,6 +193,11 @@ impl WorkspaceView {
             InputState::new(window, cx).placeholder("{\"command\": \"npx\", \"args\": []}")
         });
         let form_input = cx.new(|cx| InputState::new(window, cx).placeholder("Type the answer…"));
+        let schedule_prompt =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Prompt to send…"));
+        let schedule_when = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 5 minutes"));
+        let schedule_ends =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Run limit (optional)"));
         let form_subscription =
             cx.subscribe_in(&form_input, window, |this, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -234,6 +250,16 @@ impl WorkspaceView {
             mcp: McpStore::default(),
             saved_permissions: SavedPermissionStore::default(),
             providers: ProviderStore::default(),
+            schedules: ScheduleStore::default(),
+            schedules_session: None,
+            show_finished_schedules: false,
+            schedule_form_open: false,
+            schedule_kind: 0,
+            schedule_prompt,
+            schedule_when,
+            schedule_ends,
+            pending_schedule_delete: None,
+            schedule_request: 0,
             pending_saved_permission: None,
             pending_mcp_remove: None,
             mcp_add_open: false,
@@ -305,6 +331,25 @@ impl WorkspaceView {
                     // First load (or the selected session disappeared): open
                     // the newly selected session's timeline.
                     self.follow_selection();
+                }
+            }
+            EngineEvent::SchedulesLoaded {
+                session_id, result, ..
+            } => {
+                if self.schedules_session.as_deref() == Some(session_id.as_str()) {
+                    match result {
+                        Ok(schedules) => {
+                            self.schedules.replace(schedules);
+                            self.error = None;
+                        }
+                        Err(message) => self.error = Some(message),
+                    }
+                }
+            }
+            EngineEvent::ScheduleCreated { .. } | EngineEvent::ScheduleChanged { .. } => {}
+            EngineEvent::ScheduleDeleted { id } => {
+                if self.pending_schedule_delete.as_deref() == Some(id.as_str()) {
+                    self.pending_schedule_delete = None;
                 }
             }
             EngineEvent::ProvidersLoaded { result, .. } => {
@@ -383,6 +428,7 @@ impl WorkspaceView {
                 self.transcript.begin(&id);
                 self.engine.load_transcript(&id);
                 self.engine.load_permissions(&id);
+                self.reset_schedules(&id);
             }
             EngineEvent::SessionCreated { session } => {
                 self.apply_session_usage(&session);
@@ -399,6 +445,7 @@ impl WorkspaceView {
                 self.inbox.begin(&id);
                 self.engine.load_inbox(id.clone());
                 self.engine.load_forms(id.clone());
+                self.reset_schedules(&id);
                 if let Some(project_id) = self
                     .sessions
                     .selected()
@@ -602,14 +649,146 @@ impl WorkspaceView {
                 self.transcript.begin(&id);
                 self.engine.load_transcript(id.clone());
                 self.permissions.begin(&id);
-                self.engine.load_permissions(id);
+                self.engine.load_permissions(id.clone());
+                if self.schedules_session.as_deref() == Some(id.as_str()) {
+                    // The stream may have dropped schedule events; resnapshot.
+                    self.load_schedules();
+                } else {
+                    self.reset_schedules(&id);
+                }
             }
             None => {
                 self.transcript = TranscriptStore::default();
                 self.permissions = PermissionQueue::default();
                 self.inbox = InboxStore::default();
                 self.permission_in_flight = None;
+                self.schedules = ScheduleStore::default();
+                self.schedules_session = None;
+                self.pending_schedule_delete = None;
+                self.schedule_form_open = false;
             }
+        }
+    }
+
+    /// Point the schedules panel at a session and load its server list.
+    fn reset_schedules(&mut self, session_id: &str) {
+        self.schedules = ScheduleStore::default();
+        self.schedules_session = Some(session_id.to_string());
+        self.pending_schedule_delete = None;
+        self.schedule_form_open = false;
+        self.load_schedules();
+    }
+
+    fn load_schedules(&mut self) {
+        let Some(session_id) = self.schedules_session.clone() else {
+            return;
+        };
+        self.schedule_request += 1;
+        self.engine
+            .load_schedules(self.schedule_request, session_id);
+    }
+
+    /// Validate the form locally, then let the server create the schedule.
+    fn save_schedule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session_id) = self.schedules_session.clone() else {
+            self.error = Some("Open a session before adding a schedule.".into());
+            cx.notify();
+            return;
+        };
+        let prompt = self.schedule_prompt.read(cx).value().trim().to_string();
+        if prompt.is_empty() {
+            self.error = Some("A scheduled prompt cannot be empty.".into());
+            cx.notify();
+            return;
+        }
+        let value = self.schedule_when.read(cx).value().trim().to_string();
+        let when = match self.schedule_kind {
+            0 => {
+                if let Err(message) = validate_duration(&value) {
+                    self.error = Some(message);
+                    cx.notify();
+                    return;
+                }
+                ScheduleWhen::in_(value)
+            }
+            1 => {
+                if value.is_empty() {
+                    self.error = Some("A date and time are required.".into());
+                    cx.notify();
+                    return;
+                }
+                ScheduleWhen::at(value)
+            }
+            2 => {
+                if let Err(message) = validate_duration(&value) {
+                    self.error = Some(message);
+                    cx.notify();
+                    return;
+                }
+                ScheduleWhen::every(value)
+            }
+            _ => {
+                if value.is_empty() {
+                    self.error = Some("A cron expression is required.".into());
+                    cx.notify();
+                    return;
+                }
+                ScheduleWhen::cron(value)
+            }
+        };
+        let raw_ends = self.schedule_ends.read(cx).value().trim().to_string();
+        let ends = if raw_ends.is_empty() {
+            None
+        } else {
+            match raw_ends.parse::<u32>() {
+                Ok(times) if times > 0 => Some(serde_json::json!({ "times": times })),
+                _ => {
+                    self.error = Some("The run limit must be a positive whole number.".into());
+                    cx.notify();
+                    return;
+                }
+            }
+        };
+        let name = prompt.chars().take(40).collect::<String>();
+        self.schedule_request += 1;
+        self.engine.create_schedule(
+            self.schedule_request,
+            CreateScheduleRequest {
+                session_id,
+                name: Some(name),
+                when,
+                if_condition: None,
+                until: None,
+                ends,
+                prompt,
+            },
+        );
+        self.schedule_form_open = false;
+        self.schedule_prompt
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.schedule_when
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.schedule_ends
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.error = None;
+        cx.notify();
+    }
+
+    fn schedule_kind_label(&self) -> &'static str {
+        match self.schedule_kind {
+            0 => "In",
+            1 => "At",
+            2 => "Every",
+            _ => "Cron",
+        }
+    }
+
+    fn schedule_kind_hint(&self) -> &'static str {
+        match self.schedule_kind {
+            0 => "duration, e.g. 5 minutes",
+            1 => "date, e.g. 2030-01-01T09:00:00Z",
+            2 => "interval, e.g. 1 hour",
+            _ => "expression, e.g. 0 * * * *",
         }
     }
 
@@ -1577,6 +1756,224 @@ impl WorkspaceView {
             }
         }
         panel = panel.child(list);
+
+        if self.schedules_session.is_some() {
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .flex()
+                        .justify_between()
+                        .child(div().text_sm().child("Schedules"))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(if self.schedules.has_finished() {
+                                    div()
+                                        .id("schedule-show-finished")
+                                        .text_xs()
+                                        .text_color(theme.muted)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.show_finished_schedules =
+                                                !this.show_finished_schedules;
+                                            cx.notify();
+                                        }))
+                                        .child(if self.show_finished_schedules {
+                                            "Hide finished"
+                                        } else {
+                                            "Show finished"
+                                        })
+                                } else {
+                                    div().id("schedule-show-finished-placeholder")
+                                })
+                                .child(
+                                    div()
+                                        .id("schedule-add-toggle")
+                                        .text_xs()
+                                        .text_color(theme.accent)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.schedule_form_open = !this.schedule_form_open;
+                                            cx.notify();
+                                        }))
+                                        .child(if self.schedule_form_open {
+                                            "Cancel"
+                                        } else {
+                                            "Add"
+                                        }),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .px_3()
+                        .pb_2()
+                        .text_xs()
+                        .text_color(theme.warning)
+                        .child("Schedules only run while Rust Harness is open."),
+                );
+
+            if self.schedule_form_open {
+                section = section
+                    .child(Input::new(&self.schedule_prompt).w_full())
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .flex()
+                            .justify_between()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .id("schedule-kind")
+                                    .text_color(theme.accent)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.schedule_kind = (this.schedule_kind + 1) % 4;
+                                        cx.notify();
+                                    }))
+                                    .child(format!("When: {}", self.schedule_kind_label())),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme.muted)
+                                    .child(self.schedule_kind_hint()),
+                            ),
+                    )
+                    .child(Input::new(&self.schedule_when).w_full())
+                    .child(Input::new(&self.schedule_ends).w_full())
+                    .child(
+                        div()
+                            .id("schedule-save")
+                            .px_3()
+                            .py_1()
+                            .text_xs()
+                            .text_color(theme.accent)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_schedule(window, cx);
+                            }))
+                            .child("Save"),
+                    );
+            }
+
+            let mut listed = false;
+            for schedule in self.schedules.visible(self.show_finished_schedules) {
+                listed = true;
+                let id = schedule.id.clone();
+                let cadence = schedule
+                    .when
+                    .as_ref()
+                    .map(describe_when)
+                    .unwrap_or_default();
+                let next = next_run_label(schedule.next_due_at, now_ms());
+                let status = schedule.status.clone();
+                let reason = failure_reason(schedule);
+
+                let mut row = div()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .flex_col()
+                    .text_xs()
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .child(schedule.name.clone())
+                            .child(status.label().to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .text_color(theme.muted)
+                            .child(cadence)
+                            .child(next),
+                    );
+                if let Some(reason) = reason {
+                    row = row.child(div().text_color(theme.danger).child(reason));
+                }
+
+                let mut actions = div().flex().gap_2().justify_end();
+                let session_id = self.schedules_session.clone().unwrap_or_default();
+                if status.is_active() {
+                    let pause_id = id.clone();
+                    actions = actions.child(
+                        div()
+                            .id(SharedString::from(format!("schedule-pause-{id}")))
+                            .text_color(theme.muted)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.schedule_request += 1;
+                                this.engine.pause_schedule(
+                                    this.schedule_request,
+                                    session_id.clone(),
+                                    pause_id.clone(),
+                                );
+                                cx.notify();
+                            }))
+                            .child("Pause"),
+                    );
+                } else if matches!(status, ScheduleStatus::Paused) {
+                    let resume_id = id.clone();
+                    actions = actions.child(
+                        div()
+                            .id(SharedString::from(format!("schedule-resume-{id}")))
+                            .text_color(theme.muted)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.schedule_request += 1;
+                                this.engine.resume_schedule(
+                                    this.schedule_request,
+                                    session_id.clone(),
+                                    resume_id.clone(),
+                                );
+                                cx.notify();
+                            }))
+                            .child("Resume"),
+                    );
+                }
+
+                let session_id = self.schedules_session.clone().unwrap_or_default();
+                let delete_id = id.clone();
+                let pending = self.pending_schedule_delete.as_deref() == Some(id.as_str());
+                actions = actions.child(
+                    div()
+                        .id(SharedString::from(format!("schedule-delete-{id}")))
+                        .text_color(if pending { theme.danger } else { theme.muted })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.pending_schedule_delete.as_deref() == Some(delete_id.as_str()) {
+                                this.schedule_request += 1;
+                                this.engine.delete_schedule(
+                                    this.schedule_request,
+                                    session_id.clone(),
+                                    delete_id.clone(),
+                                );
+                                this.pending_schedule_delete = None;
+                            } else {
+                                this.pending_schedule_delete = Some(delete_id.clone());
+                            }
+                            cx.notify();
+                        }))
+                        .child(if pending { "Confirm" } else { "Delete" }),
+                );
+                row = row.child(actions);
+                section = section.child(row);
+            }
+            if !listed && !self.schedule_form_open {
+                section = section.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child("No schedules for this session."),
+                );
+            }
+            panel = panel.child(section);
+        }
 
         if !self.plugins.is_empty() {
             let mut section = div()

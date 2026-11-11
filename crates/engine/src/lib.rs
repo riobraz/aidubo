@@ -15,9 +15,9 @@ use async_channel::{Receiver, Sender};
 use tokio::sync::oneshot;
 
 pub use harness_protocol::{
-    AgentInfo, CatalogKind, CommandInfo, CommandRequest, ExecutionOutcome, FileDiff, FileEntry,
-    FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply, PromptRequest,
-    SkillInfo, StreamEvent,
+    AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreateScheduleRequest, ExecutionOutcome,
+    FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef, PermissionReply,
+    PromptRequest, SkillInfo, StreamEvent,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -73,6 +73,34 @@ pub enum EngineCommand {
         session_id: String,
         title: String,
         fields: serde_json::Value,
+    },
+    /// Load schedules for a session.
+    LoadSchedules {
+        request_id: u64,
+        session_id: String,
+    },
+    /// Create a schedule.
+    CreateSchedule {
+        request_id: u64,
+        request: Box<CreateScheduleRequest>,
+    },
+    /// Pause a schedule.
+    PauseSchedule {
+        request_id: u64,
+        session_id: String,
+        schedule_id: String,
+    },
+    /// Resume a schedule.
+    ResumeSchedule {
+        request_id: u64,
+        session_id: String,
+        schedule_id: String,
+    },
+    /// Delete a schedule.
+    DeleteSchedule {
+        request_id: u64,
+        session_id: String,
+        schedule_id: String,
     },
     /// Load providers.
     LoadProviders {
@@ -341,6 +369,64 @@ impl Engine {
             session_id: id.into(),
             title: title.into(),
             fields,
+        })
+    }
+
+    /// Load schedules for a session.
+    pub fn load_schedules(&self, request_id: u64, session_id: impl Into<String>) -> bool {
+        self.send(EngineCommand::LoadSchedules {
+            request_id,
+            session_id: session_id.into(),
+        })
+    }
+
+    /// Create a schedule.
+    pub fn create_schedule(&self, request_id: u64, request: CreateScheduleRequest) -> bool {
+        self.send(EngineCommand::CreateSchedule {
+            request_id,
+            request: Box::new(request),
+        })
+    }
+
+    /// Pause a schedule.
+    pub fn pause_schedule(
+        &self,
+        request_id: u64,
+        session_id: impl Into<String>,
+        schedule_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::PauseSchedule {
+            request_id,
+            session_id: session_id.into(),
+            schedule_id: schedule_id.into(),
+        })
+    }
+
+    /// Resume a schedule.
+    pub fn resume_schedule(
+        &self,
+        request_id: u64,
+        session_id: impl Into<String>,
+        schedule_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::ResumeSchedule {
+            request_id,
+            session_id: session_id.into(),
+            schedule_id: schedule_id.into(),
+        })
+    }
+
+    /// Delete a schedule.
+    pub fn delete_schedule(
+        &self,
+        request_id: u64,
+        session_id: impl Into<String>,
+        schedule_id: impl Into<String>,
+    ) -> bool {
+        self.send(EngineCommand::DeleteSchedule {
+            request_id,
+            session_id: session_id.into(),
+            schedule_id: schedule_id.into(),
         })
     }
 

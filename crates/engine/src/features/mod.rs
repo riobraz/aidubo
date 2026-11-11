@@ -14,6 +14,7 @@ pub(crate) mod prompt;
 pub(crate) mod provider;
 pub(crate) mod revert;
 pub(crate) mod saved_permissions;
+pub(crate) mod schedule;
 pub(crate) mod sessions;
 pub(crate) mod transcript;
 pub(crate) mod usage;
