@@ -94,7 +94,8 @@ Last updated: 2026-11-10
 - 2026-11-10 — **M13-04 data path.** `PluginInfo` with raw source/state
   unions plus labels (3 tests), `PluginStore` sorted with 400-char errors
   (2 tests), `LoadPlugins`/`CheckPlugins` and API; the right panel lists id and
-  status. Missing: update action with confirmation and the check rate limit.
+  status, an Update action gated by a two-step confirmation, and a 60 s
+  engine-side guard on checks.
 - 2026-11-10 — **Finding:** v2.2.6 rejects every `provider` value on
   `POST /api/vcs/init` with `Unknown VCS provider`; the M10-01 test records the
   message instead of claiming the endpoint works.

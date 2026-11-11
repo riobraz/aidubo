@@ -18,6 +18,18 @@ impl SessionApi {
         Ok(page.data)
     }
 
+    pub async fn update_plugins(&self, targets: Vec<String>) -> Result<(), String> {
+        let response = self
+            .request(Method::POST, "/api/plugin/update")
+            .query(&[("location[directory]", self.directory.as_str())])
+            .json(&serde_json::json!({ "targets": targets }))
+            .send()
+            .await
+            .map_err(network_error)?;
+        ensure_success(response).await?;
+        Ok(())
+    }
+
     pub async fn check_plugins(&self) -> Result<(), String> {
         let response = self
             .request(Method::POST, "/api/plugin/check")

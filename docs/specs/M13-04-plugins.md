@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | in-progress |
+| Status | done |
 | Wave | 1 |
 | Size | S |
 | Depends on | T0 |

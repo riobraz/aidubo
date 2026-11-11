@@ -82,6 +82,10 @@ pub enum EngineCommand {
     CheckPlugins {
         request_id: u64,
     },
+    /// Update one plugin.
+    UpdatePlugin {
+        id: String,
+    },
     /// Load provider budget limits.
     LoadUsageLimits {
         request_id: u64,
@@ -310,6 +314,11 @@ impl Engine {
     /// Run a plugin update check.
     pub fn check_plugins(&self, request_id: u64) -> bool {
         self.send(EngineCommand::CheckPlugins { request_id })
+    }
+
+    /// Update one plugin. The UI confirms before calling this.
+    pub fn update_plugin(&self, id: impl Into<String>) -> bool {
+        self.send(EngineCommand::UpdatePlugin { id: id.into() })
     }
 
     /// Load provider budget limits.

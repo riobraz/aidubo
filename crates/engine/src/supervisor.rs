@@ -51,6 +51,11 @@ pub enum EngineEvent {
         request_id: u64,
         result: Result<Vec<harness_protocol::PluginInfo>, String>,
     },
+    /// A plugin update finished.
+    PluginUpdated {
+        id: String,
+        result: Result<(), String>,
+    },
     /// A plugin check finished.
     PluginsChecked {
         request_id: u64,
@@ -315,7 +320,15 @@ async fn run_inner(
     tokio::spawn(pump_events(api.clone(), events.clone()));
 
     // Populate the sidebar as soon as the engine is usable.
-    match run_command(&api, EngineCommand::ListSessions, &mut shutdown).await {
+    let mut plugin_check_at: Option<std::time::Instant> = None;
+    match run_command(
+        &api,
+        EngineCommand::ListSessions,
+        &mut shutdown,
+        &mut plugin_check_at,
+    )
+    .await
+    {
         CommandResult::Event(event) => {
             let _ = events.send(*event).await;
         }
@@ -344,7 +357,7 @@ async fn run_inner(
                     return Ok(());
                 };
 
-                match run_command(&api, command, &mut shutdown).await {
+                match run_command(&api, command, &mut shutdown, &mut plugin_check_at).await {
                     CommandResult::Event(event) => {
                         let _ = events.send(*event).await;
                     }
@@ -373,6 +386,7 @@ async fn run_command(
     api: &SessionApi,
     command: EngineCommand,
     shutdown: &mut oneshot::Receiver<()>,
+    plugin_check_at: &mut Option<std::time::Instant>,
 ) -> CommandResult {
     match command {
         EngineCommand::ListSessions => tokio::select! {
@@ -425,9 +439,26 @@ async fn run_command(
             _ = &mut *shutdown => CommandResult::Shutdown,
             result = api.plugins() => event(EngineEvent::PluginsLoaded { request_id, result }),
         },
-        EngineCommand::CheckPlugins { request_id } => tokio::select! {
+        EngineCommand::CheckPlugins { request_id } => {
+            let now = std::time::Instant::now();
+            if plugin_check_at
+                .is_some_and(|at| now.duration_since(at) < std::time::Duration::from_secs(60))
+            {
+                event(EngineEvent::PluginsChecked {
+                    request_id,
+                    result: Ok(()),
+                })
+            } else {
+                *plugin_check_at = Some(now);
+                tokio::select! {
+                    _ = &mut *shutdown => CommandResult::Shutdown,
+                    result = api.check_plugins() => event(EngineEvent::PluginsChecked { request_id, result }),
+                }
+            }
+        }
+        EngineCommand::UpdatePlugin { id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
-            result = api.check_plugins() => event(EngineEvent::PluginsChecked { request_id, result }),
+            result = api.update_plugins(vec![id.clone()]) => event(EngineEvent::PluginUpdated { id, result }),
         },
         EngineCommand::LoadUsageLimits { request_id } => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,

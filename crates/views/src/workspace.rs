@@ -113,6 +113,7 @@ pub struct WorkspaceView {
     context: ContextStore,
     usage: UsageStore,
     plugins: PluginStore,
+    pending_plugin_update: Option<String>,
     form_input: Entity<InputState>,
     _form_subscription: Subscription,
     form_key: Option<String>,
@@ -217,6 +218,7 @@ impl WorkspaceView {
             context: ContextStore::default(),
             usage: UsageStore::default(),
             plugins: PluginStore::default(),
+            pending_plugin_update: None,
             form_input,
             _form_subscription: form_subscription,
             form_key: None,
@@ -288,6 +290,10 @@ impl WorkspaceView {
                 }
             }
             EngineEvent::PluginsChecked { .. } => {}
+            EngineEvent::PluginUpdated { .. } => {
+                self.pending_plugin_update = None;
+                self.engine.load_plugins(2);
+            }
             EngineEvent::UsageLimitsLoaded { result, .. } => match result {
                 Ok(limits) => self.usage.set(limits, now_ms()),
                 Err(_) => self.usage.mark_unavailable(now_ms()),
@@ -1521,16 +1527,35 @@ impl WorkspaceView {
                 .border_color(theme.border)
                 .child(div().px_3().py_2().text_sm().child("Plugins"));
             for plugin in self.plugins.rows() {
-                section = section.child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .flex()
-                        .justify_between()
-                        .text_xs()
-                        .child(plugin.id.clone())
-                        .child(plugin.status.clone()),
-                );
+                let id = plugin.id.clone();
+                let pending = self.pending_plugin_update.as_deref() == Some(id.as_str());
+                let mut row = div()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .justify_between()
+                    .text_xs()
+                    .child(plugin.id.clone())
+                    .child(plugin.status.clone());
+                if plugin.outdated {
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("plugin-update-{id}")))
+                            .px_2()
+                            .text_color(theme.warning)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.pending_plugin_update.as_deref() == Some(id.as_str()) {
+                                    this.engine.update_plugin(id.clone());
+                                    this.pending_plugin_update = None;
+                                } else {
+                                    this.pending_plugin_update = Some(id.clone());
+                                }
+                                cx.notify();
+                            }))
+                            .child(if pending { "Confirm" } else { "Update" }),
+                    );
+                }
+                section = section.child(row);
             }
             panel = panel.child(section);
         }
