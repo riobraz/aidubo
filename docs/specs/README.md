@@ -215,13 +215,14 @@ Update this table when a node closes.
 | M13-03 saved-permissions | 1 | done |
 | M13-04 plugins | 1 | done |
 | M14-01 pty-transport | 1 | done |
-| M14-03 terminal-view | 2 | ready |
+| M14-03 terminal-view | 2 | done |
 | M15-01 preview | 1 | cancelled |
 | M16-01 linux-packaging | 1 | done |
 | M16-02 updates | 1 | done |
 | M16-03 session-transfer | 1 | done |
 | M16-04 diagnostics | 1 | done |
 | G1 wave-1 gate | 1 | done |
+| G2 wave-2 gate | 2 | done |
 
 ## 8. What is deliberately not a node
 

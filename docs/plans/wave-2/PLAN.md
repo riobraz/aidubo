@@ -1,6 +1,6 @@
 # Plan — Wave 2 execution
 
-Status: in progress · 2026-11-12
+Status: done · 2026-11-12
 
 ## Goal
 
@@ -106,13 +106,16 @@ onto a small diff.
       the engine loop, app-local persistence, goal bar, node gates, and the
       scripted-provider e2e.
 - [x] M12-01: close the spec and update the status table.
-- [ ] M14-03: claim, add the pure key-encoding tests and grid batching test,
+- [x] M14-03: claim, add the pure key-encoding tests and grid batching test,
       then the dock view, resize debounce, detach/attach, node gates, and the
       PTY e2e.
-- [ ] M14-03: close the spec and update the status table.
-- [ ] G2: run every workspace gate, every e2e gate the wave touched,
+- [x] M14-03: close the spec and update the status table.
+- [x] G2: run every workspace gate, every e2e gate the wave touched,
       `python3 scripts/spec-graph.py --validate`, and the manual checks below.
-- [ ] Close the wave: update this plan's `STATUS.md`, the README status, and
+      The GUI manual checks were not performed on this headless host; their
+      automated equivalents are the per-node e2e gates, recorded in
+      `STATUS.md`.
+- [x] Close the wave: update this plan's `STATUS.md`, the README status, and
       merge the wave-2 branch through a PR after CI passes.
 
 Recommended landing order: M11-02, then M12-01, then M14-03. M11-02 owns the

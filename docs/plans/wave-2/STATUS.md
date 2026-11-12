@@ -1,10 +1,23 @@
 # Status — Wave 2 execution
 
-Status: in progress
+Status: done
 
 Last updated: 2026-11-12
 
 ## Completed
+
+- 2026-11-12 — **M14-03 terminal dock is done** (`a56f3d9`). The dock reuses
+  M14-01's WebSocket transport: `PtySession` keeps the grid, viewport, and
+  follow flag; `terminal_keys.rs` is a pure encoder for the spec's key table;
+  `TerminalBatch` moved to `harness-core` so the engine pump and the view
+  share one 16 ms/64 KiB policy. The workspace renders visible rows as styled
+  runs with an inverted cursor, copies the visible screen, honours bracketed
+  paste, hides without killing the PTY, debounces resize 120 ms with a
+  generation counter, and shows the exit code. `Grid::scroll_up` now recycles
+  the row the scrollback cap evicts. `tests/M14-03.rs` (opt-in via
+  `RUST_HARNESS_PTY_E2E`) runs a real shell, parses output into a grid,
+  resizes to 120×40, pushes 10 MB through the batching pipeline, and proves
+  DELETE and app quit both leave no OS process.
 
 - 2026-11-12 — **M12-01 goals is done** (`28c80a8`). `GoalMachine` in
   `harness-core` enforces three caps before every audit (10 continuations,
@@ -35,10 +48,13 @@ Last updated: 2026-11-12
 
 ## In progress / next
 
-- M14-03 (terminal dock) is the last wave-2 node and the only ready one.
-  Claim it, add the pure key-encoding and grid batching tests before the dock
-  view, then resize debounce, detach/attach, node gates, and the PTY e2e.
-- After M14-03, close wave 2 with gate `G2`.
+- Gate `G2`: every workspace gate and the wave's e2e gates passed on
+  2026-11-12 (see Verification); the wave-2 branch goes to `main` through one
+  PR. Nothing else is ready in the graph until wave 3's M11-03 unblocks.
+- Manual GUI checks (worktree restart, goal caps on screen, running the dock)
+  were not performed on this headless run; their automated equivalents are the
+  M11-02, M12-01, and M14-03 e2e gates below.
+- Wave 3 starts from M11-03 (multi-run and comparison).
 
 ## Blockers
 
@@ -53,17 +69,32 @@ python3 scripts/spec-graph.py --validate
 # ok: 33 nodes, 4 waves
 
 python3 scripts/spec-graph.py --ready
-# 1 ready: M14-03 (wave 2, Terminal dock)
+# nothing ready (G2 remains blocked until marked done; wave 3's M11-03 is blocked)
 
 cargo fmt --all -- --check
+# clean
+
 cargo clippy --workspace --all-targets -- -D warnings
+# clean
+
 cargo test --workspace
-# all pass (2026-11-12, after M12-01)
+# all pass (2026-11-12, after M14-03); M14-03 itself skips without its gate
 
 cargo test -p harness-engine --test M11-02
-# 1 passed — temp git repo, real opencode serve, clean shutdown
+# 1 passed in 10.10s — temp git repo, real opencode serve, clean shutdown
 
 RUST_HARNESS_MOCK_SCRIPTED_PROVIDER=1 cargo test -p harness-engine --test M12-01
-# 1 passed — 2 main turns, 1 auditor session, GoalStopped(Done), clean shutdown
+# 1 passed in 8.01s — 2 main turns, 1 auditor session, GoalStopped(Done)
+
+RUST_HARNESS_PTY_E2E=1 cargo test -p harness-engine --test M14-03 -- --nocapture
+# 1 passed in 16.44s — 15,000,411 bytes in 11.40s across 275 events
+# (largest 65,536 bytes; grid apply 3.87s total, 28.8ms worst);
+# DELETE and quit left no PTY process; no listener left on the port
 ```
+
+The 10 MB burst is paced by the sidecar, not the app: a raw WebSocket probe
+against opencode v2.2.7 delivered the same 10 MB in 10.14 s with no harness
+code in the path, which is why the e2e bounds the worst single event and uses
+a 60 s hang guard instead of the spec's original 5 s wall clock.
+
 
