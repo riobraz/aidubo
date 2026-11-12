@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | blocked (M11-02) |
+| Status | done |
 | Wave | 3 |
 | Size | L |
 | Depends on | M11-02 |
@@ -61,11 +61,18 @@ Rules:
 
 ## 4. Engine
 
-Commands `StartRunGroup{request}`, `DiscardRun{group_id, run_id}`,
-`KeepRun{group_id, run_id}`, `DiscardGroup{group_id}`.
+Commands `StartRunGroup{group}`, `DiscardRun{group_id, run_id, cleanup}`,
+`KeepRun{group_id, run_id}`, `DiscardGroup{group_id, runs: Vec<RunDiscard>}`.
+The discard commands carry the resources the core model says each run still
+holds; the runtime merges them with its own handles so an event that arrives
+late cannot leak a checkout. `RunGroups::discard_group` returns
+`Vec<(run_id, RunCleanup)>` so each deleted run can be reported.
 
-Events `RunGroupStarted{group_id}`, `RunStateChanged{group_id, run_id, state}`,
-`RunGroupFinished{group_id}`.
+Events `RunGroupStarted{group}`, `RunStateChanged{group_id, run_id, state,
+session_id, worktree}`, `RunGroupFinished{group_id}`. The extra session and
+worktree fields are an additive extension: the view renders and cleans up
+without a second round trip, and a client that only reads `state` is
+unaffected.
 
 The supervisor executes the steps sequentially per run and in parallel across
 runs, capped at 5 concurrent runs. Every step is idempotent: a worktree that
@@ -79,7 +86,9 @@ mark missing ones `Failed`.
 A "Compare" workspace: one column per run (2–3 visible; more scrolls), each
 with model name, state badge, transcript tail, and Stop. Footer actions:
 **Keep this** (per column), **Discard the rest**, **Open in sidebar**.
-Narrow windows fall back to tabs.
+Narrow windows fall back to tabs. The sidebar's **Compare** button reopens the
+newest group; **New comparison** returns to the form. Groups persist per
+project in the app-data directory and a live run is restored as interrupted.
 
 ## 6. Non-goals
 
@@ -95,18 +104,29 @@ cross-project groups.
 | core | `run_group_relaunch_marks_interrupted` | no silent resume |
 | core | `run_group_discard_cleans_existing_only` | no error on missing |
 | engine | `run_group_caps_concurrency_at_five` | cap |
+| engine | `worktree_names_are_path_safe_and_bounded` | safe checkout name |
+| engine | `existing_worktree_errors_are_recognized` | idempotent reuse |
+| views | `run_compare_falls_back_to_tabs_when_narrow` | responsive layout |
+| views | `run_compare_state_labels_and_tones_are_stable` | stable badges |
+| views | `run_compare_tail_keeps_the_end_and_respects_boundaries` | bounded tail |
+| views | `run_compare_streaming_tail_is_bounded` | bounded storage |
+| views | `run_compare_group_requires_distinct_models_and_a_prompt` | form rules |
+| app | `run_groups_round_trip_per_project` | app-local persistence |
+| app | `invalid_files_restore_as_empty` | tolerant restore |
 
 E2E (`tests/M11-03.rs`, gate `RUST_HARNESS_MOCK_SCRIPTED_PROVIDER`): three runs
 with the same prompt, wait for all `Done`, assert three sessions and three
 worktrees on disk; discard one run and assert its worktree is gone while the
-other two still exist. Durable assertion: filesystem + `GET /api/worktree`.
+other two still exist; then discard the group and assert no run worktree
+remains and the root session survives. Durable assertion: filesystem +
+`GET /api/worktree`, plus a clean shutdown on the sidecar port.
 
 ## 8. Acceptance
 
-- [ ] Three runs start from one prompt and finish independently.
-- [ ] One failure leaves the others running and usable.
-- [ ] Discard removes only the chosen worktree and its session.
-- [ ] No orphan worktree after discarding a whole group.
+- [x] Three runs start from one prompt and finish independently.
+- [x] One failure leaves the others running and usable.
+- [x] Discard removes only the chosen worktree and its session.
+- [x] No orphan worktree after discarding a whole group.
 
 ## 9. Risks
 

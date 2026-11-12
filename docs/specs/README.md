@@ -206,7 +206,7 @@ Update this table when a node closes.
 | M10-03 diff-view | 2 | done |
 | M11-01 projects | 1 | done |
 | M11-02 worktrees | 2 | done |
-| M11-03 multi-run | 3 | blocked (M11-02) |
+| M11-03 multi-run | 3 | done |
 | M12-01 goals | 2 | done |
 | M12-02 schedules | 1 | done |
 | M12-03 notifications | 1 | done |
@@ -223,6 +223,7 @@ Update this table when a node closes.
 | M16-04 diagnostics | 1 | done |
 | G1 wave-1 gate | 1 | done |
 | G2 wave-2 gate | 2 | done |
+| G3 wave-3 gate | 3 | done |
 
 ## 8. What is deliberately not a node
 

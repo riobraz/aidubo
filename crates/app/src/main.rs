@@ -14,7 +14,7 @@ use harness_views::{
     CancelOverlays, FocusComposer, NewSession, NotifyChannels, ToggleProjectSwitcher, ToggleTheme,
     WorkspaceView,
 };
-use rust_harness::{goal_store, notify, persistence};
+use rust_harness::{goal_store, notify, persistence, run_store};
 
 fn main() {
     if std::env::args().any(|arg| arg == "--diagnostics") {
@@ -37,6 +37,13 @@ fn main() {
     let saved_worktrees = restored.worktrees;
     let saved_notice = restored.notice;
     let saved_goal = goal_store::restore();
+    // `WorkspaceView` canonicalizes the project path; the run file is keyed by
+    // the same form so a relaunch finds the groups it saved.
+    let runs_directory = std::fs::canonicalize(&project_dir)
+        .unwrap_or_else(|_| project_dir.clone())
+        .to_string_lossy()
+        .into_owned();
+    let saved_runs = run_store::restore_for(&runs_directory);
     let goal_auditor_model = std::env::var("RUST_HARNESS_GOAL_AUDITOR_MODEL")
         .ok()
         .and_then(|raw| goal_store::parse_auditor_model(&raw));
@@ -67,6 +74,20 @@ fn main() {
         })
     {
         tracing::warn!(%error, "could not start the goal state thread");
+    }
+
+    let (runs_sender, runs_receiver) = async_channel::unbounded::<harness_views::RunSnapshot>();
+    if let Err(error) = std::thread::Builder::new()
+        .name("run-state".into())
+        .spawn(move || {
+            while let Ok(snapshot) = runs_receiver.recv_blocking() {
+                if let Err(error) = run_store::save(&snapshot.directory, &snapshot.groups) {
+                    tracing::warn!(%error, "could not persist the run state");
+                }
+            }
+        })
+    {
+        tracing::warn!(%error, "could not start the run state thread");
     }
 
     let notify_settings = notify::load_settings();
@@ -136,6 +157,12 @@ fn main() {
                 .persist_goal_with(Arc::new(move |record| {
                     if goal_sender.try_send(record).is_err() {
                         tracing::warn!("could not queue the goal state for saving");
+                    }
+                }))
+                .restore_saved_runs(saved_runs)
+                .persist_runs_with(Arc::new(move |snapshot| {
+                    if runs_sender.try_send(snapshot).is_err() {
+                        tracing::warn!("could not queue the run state for saving");
                     }
                 }))
             })

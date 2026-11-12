@@ -15,16 +15,19 @@ use gpui_kit::*;
 use harness_core::{
     AuditDecision, AuthFlow, CapKind, Content, ContextStore, DiffLineKind, DiffRow, DraftSend,
     EngineStatus, Entry, FormStore, Goal, GoalLimits, GoalMachine, GoalRecord, GoalState,
-    InboxStore, McpStore, Notification, NotifyContext, NotifyInput, NotifyKind, NotifyPolicy,
-    NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState,
-    PluginStore, ProjectDrafts, ProjectStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
-    SavedPermissionStore, ScheduleStore, SessionStore, Stopped, ToolCall, ToolStatus,
-    TranscriptStore, TransferStore, UsageStore, VcsStore, WorktreeStore, describe_when,
-    failure_reason, flatten, group_sessions_by_directory, import_error, next_run_label, now_ms,
-    parse_patch, path_to_file_uri, relative_time, sessions_in_directory, url_host,
-    validate_base_ref, validate_duration, validate_import, visible_range,
+    InboxStore, MAX_RUNS_PER_GROUP, McpStore, Notification, NotifyContext, NotifyInput, NotifyKind,
+    NotifyPolicy, NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
+    PickerKind, PickerState, PluginStore, ProjectDrafts, ProjectStore, PromptDraft, ProviderStore,
+    RevertStore, RunGroup, RunGroups, RunState, SNIPPETS, SavedPermissionStore, ScheduleStore,
+    SessionStore, Stopped, ToolCall, ToolStatus, TranscriptStore, TransferStore, UsageStore,
+    VcsStore, WorktreeStore, describe_when, failure_reason, flatten, group_sessions_by_directory,
+    import_error, next_run_label, now_ms, parse_patch, path_to_file_uri, relative_time,
+    sessions_in_directory, url_host, validate_base_ref, validate_duration, validate_import,
+    visible_range,
 };
-use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
+use harness_engine::{
+    CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, RunDiscard, StreamEvent,
+};
 use harness_protocol::{
     AgentInfo, AuthStatus, CommandAttempt, CommandInfo, CreatePtyRequest, CreateScheduleRequest,
     FileDiff, InboxDelivery, IntegrationMethod, McpStatus, ModelInfo, OAuthAttempt,
@@ -35,6 +38,7 @@ use harness_ui::{Theme, attachment_chip, status_dot};
 
 use crate::notify::NotifyChannels;
 use crate::project_switcher::ProjectSwitcher;
+use crate::run_compare::{self, CompareLayout, RunTails, StateTone};
 use crate::terminal::{PtySession, Run, TerminalResize, indexed_rgb, row_runs};
 use crate::terminal_keys::{self, KeyMods};
 use crate::transfer::{
@@ -170,6 +174,16 @@ pub type ProjectSink = Arc<dyn Fn(ProjectSnapshot) + Send + Sync>;
 /// Where the app persists the single live goal; the view never touches disk.
 pub type GoalSink = Arc<dyn Fn(Option<GoalRecord>) + Send + Sync>;
 
+/// The active project's run groups in the form the app persists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSnapshot {
+    pub directory: String,
+    pub groups: Vec<RunGroup>,
+}
+
+/// Where the app persists run groups; the view never touches disk.
+pub type RunSink = Arc<dyn Fn(RunSnapshot) + Send + Sync>;
+
 /// Terminal geometry: the dock spans the main pane, between the fixed sidebar
 /// and the changes panel.
 const TERMINAL_SIDEBAR_WIDTH: f32 = 288.0;
@@ -219,6 +233,23 @@ pub struct WorkspaceView {
     /// The auditor's last decision, shown while the loop is running.
     goal_note: Option<String>,
     goal_sink: Option<GoalSink>,
+    /// Multi-run comparisons for the active project.
+    run_groups: RunGroups,
+    run_sink: Option<RunSink>,
+    /// The group shown in the compare pane.
+    compare_group: Option<String>,
+    compare_open: bool,
+    compare_form_open: bool,
+    compare_prompt: Entity<InputState>,
+    /// Models ticked in the compare form.
+    compare_selected: Vec<harness_protocol::ModelRef>,
+    compare_error: Option<String>,
+    /// Column shown when the pane falls back to tabs.
+    compare_column: usize,
+    /// Per-run streamed text, keyed by session id.
+    run_tails: RunTails,
+    /// Selected as soon as the next session snapshot includes it.
+    pending_open_session: Option<String>,
     /// The attached terminal, if one was created. Hiding the dock keeps it.
     terminal: Option<PtySession>,
     terminal_open: bool,
@@ -415,6 +446,8 @@ impl WorkspaceView {
         let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("worktree name"));
         let goal_objective =
             cx.new(|cx| InputState::new(window, cx).placeholder("What should the agent finish?"));
+        let compare_prompt =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Prompt to send to every model…"));
         let terminal_focus = cx.focus_handle();
         let terminal_size = terminal_size_for(window);
         let form_subscription =
@@ -472,6 +505,17 @@ impl WorkspaceView {
             goal_error: None,
             goal_note: None,
             goal_sink: None,
+            run_groups: RunGroups::default(),
+            run_sink: None,
+            compare_group: None,
+            compare_open: false,
+            compare_form_open: false,
+            compare_prompt,
+            compare_selected: Vec::new(),
+            compare_error: None,
+            compare_column: 0,
+            run_tails: RunTails::default(),
+            pending_open_session: None,
             terminal: None,
             terminal_open: false,
             terminal_focus,
@@ -620,6 +664,37 @@ impl WorkspaceView {
         sink(record);
     }
 
+    /// Restore the startup project's saved groups. Any run that was still live
+    /// is marked interrupted; nothing resumes on its own.
+    pub fn restore_saved_runs(mut self, groups: Vec<RunGroup>) -> Self {
+        if groups.is_empty() {
+            return self;
+        }
+        let directory = self.directory();
+        let newest = groups.last().map(|group| group.id.clone());
+        self.run_groups.restore(directory, groups);
+        self.compare_group = newest;
+        self.persist_runs();
+        self
+    }
+
+    /// Attach the app-owned run sink and record the current groups once.
+    pub fn persist_runs_with(mut self, sink: RunSink) -> Self {
+        self.run_sink = Some(sink);
+        self.persist_runs();
+        self
+    }
+
+    fn persist_runs(&self) {
+        let Some(sink) = &self.run_sink else {
+            return;
+        };
+        sink(RunSnapshot {
+            directory: self.directory(),
+            groups: self.run_groups.groups().to_vec(),
+        });
+    }
+
     fn persist_projects(&self) {
         let Some(sink) = &self.projects_sink else {
             return;
@@ -641,6 +716,13 @@ impl WorkspaceView {
     }
 
     fn apply(&mut self, event: EngineEvent) {
+        if let EngineEvent::Stream(StreamEvent::TextDelta {
+            session_id, delta, ..
+        }) = &event
+            && self.has_run_session(session_id)
+        {
+            self.run_tails.push(session_id, delta);
+        }
         self.notify_from_event(&event);
         match event {
             EngineEvent::Starting { port } => {
@@ -692,6 +774,21 @@ impl WorkspaceView {
             EngineEvent::SessionsLoaded { sessions } => {
                 let previous = self.sessions.selected_id().map(str::to_owned);
                 self.sessions.replace(sessions);
+                if let Some(pending) = self.pending_open_session.take() {
+                    if self
+                        .sessions
+                        .sessions()
+                        .iter()
+                        .any(|session| session.id == pending)
+                    {
+                        self.sessions.select(&pending);
+                        self.compare_open = false;
+                        self.compare_form_open = false;
+                        self.follow_selection();
+                    } else {
+                        self.pending_open_session = Some(pending);
+                    }
+                }
                 if let Some(session) = self.sessions.selected() {
                     self.apply_session_usage(&session.clone());
                 }
@@ -992,6 +1089,44 @@ impl WorkspaceView {
                 self.goal_form_open = false;
                 self.persist_goal();
             }
+            EngineEvent::RunGroupStarted { group } => {
+                let group_id = group.id.clone();
+                if self.run_groups.group(&group_id).is_none()
+                    && let Err(message) = self.run_groups.start(group)
+                {
+                    self.error = Some(message);
+                }
+                self.compare_group = Some(group_id);
+                self.compare_open = true;
+                self.compare_form_open = false;
+                self.compare_error = None;
+                self.persist_runs();
+                self.reload_sessions_across();
+            }
+            EngineEvent::RunStateChanged {
+                group_id,
+                run_id,
+                state,
+                session_id,
+                worktree,
+            } => {
+                if let Some(session_id) = session_id {
+                    self.run_groups.set_session(&group_id, &run_id, session_id);
+                }
+                if let Some(worktree) = worktree {
+                    self.run_groups.set_worktree(&group_id, &run_id, worktree);
+                    self.reload_sessions_across();
+                }
+                self.run_groups.set_state(&group_id, &run_id, state);
+                self.persist_runs();
+            }
+            EngineEvent::RunGroupFinished { group_id } => {
+                if self.compare_group.as_deref() == Some(group_id.as_str()) {
+                    self.compare_column = 0;
+                }
+                self.reload_sessions_across();
+                self.persist_runs();
+            }
             EngineEvent::SessionExported {
                 session_id,
                 path,
@@ -1240,6 +1375,26 @@ impl WorkspaceView {
             EngineEvent::CommandFailed { message } => {
                 self.permission_in_flight = None;
                 self.pending_worktree_remove = None;
+                // A group that never reached the runtime would otherwise stay
+                // queued forever; the failure belongs to every one of its runs.
+                if message.starts_with("Could not start the runs")
+                    && let Some(group_id) = self.compare_group.clone()
+                    && let Some(group) = self.run_groups.group(&group_id)
+                    && group.runs.iter().all(|run| run.state == RunState::Pending)
+                {
+                    let run_ids: Vec<String> =
+                        group.runs.iter().map(|run| run.id.clone()).collect();
+                    for run_id in run_ids {
+                        self.run_groups.set_state(
+                            &group_id,
+                            &run_id,
+                            RunState::Failed {
+                                message: message.clone(),
+                            },
+                        );
+                    }
+                    self.persist_runs();
+                }
                 self.error = Some(message);
                 // A failed model/agent change may have left an optimistic badge;
                 // the server snapshot is authoritative.
@@ -1359,6 +1514,9 @@ impl WorkspaceView {
 
     /// Clear everything that belongs to the project that was just left.
     fn reset_project_scoped(&mut self) {
+        // Save the groups before the directory changes; they stay on disk even
+        // though cross-project groups are not shown.
+        self.persist_runs();
         self.sessions = SessionStore::default();
         self.transcript = TranscriptStore::default();
         self.permissions = PermissionQueue::default();
@@ -1382,13 +1540,22 @@ impl WorkspaceView {
         self.selected_file = None;
         self.error = None;
         let directory = self.directory();
-        self.worktrees.begin(directory);
+        self.worktrees.begin(directory.clone());
         self.worktrees_open = false;
         self.worktree_form_open = false;
         self.worktree_error = None;
         self.pending_worktree_remove = None;
         self.goal_form_open = false;
         self.goal_error = None;
+        self.run_groups.begin(directory);
+        self.compare_group = None;
+        self.compare_open = false;
+        self.compare_form_open = false;
+        self.compare_error = None;
+        self.compare_selected.clear();
+        self.compare_column = 0;
+        self.run_tails.clear();
+        self.pending_open_session = None;
     }
 
     /// Reload the server-backed lists that are scoped to a directory.
@@ -1420,12 +1587,21 @@ impl WorkspaceView {
     /// snapshot, so the sidebar can group them by directory.
     fn reload_sessions_across(&mut self) {
         let directory = self.directory();
-        let directories: Vec<String> = self
+        let mut directories: Vec<String> = self
             .worktrees
             .entries()
             .iter()
             .map(|entry| entry.directory.clone())
             .collect();
+        for group in self.run_groups.groups() {
+            for run in &group.runs {
+                if let Some(worktree) = &run.worktree
+                    && !directories.contains(worktree)
+                {
+                    directories.push(worktree.clone());
+                }
+            }
+        }
         if directories.is_empty() {
             self.engine.refresh_sessions(directory);
         } else {
@@ -1511,6 +1687,212 @@ impl WorkspaceView {
         {
             machine.sync_goal(goal);
         }
+    }
+
+    fn has_run_session(&self, session_id: &str) -> bool {
+        self.run_groups.groups().iter().any(|group| {
+            group
+                .runs
+                .iter()
+                .any(|run| run.session_id.as_deref() == Some(session_id))
+        })
+    }
+
+    fn open_compare(&mut self, cx: &mut Context<Self>) {
+        self.compare_open = true;
+        self.compare_error = None;
+        if self
+            .compare_group
+            .as_deref()
+            .and_then(|id| self.run_groups.group(id))
+            .is_none()
+        {
+            self.compare_group = self
+                .run_groups
+                .groups()
+                .last()
+                .map(|group| group.id.clone());
+        }
+        self.compare_form_open = self.compare_group.is_none();
+        if self.compare_form_open {
+            self.compare_selected.clear();
+        }
+        cx.notify();
+    }
+
+    fn open_compare_form(&mut self, cx: &mut Context<Self>) {
+        self.compare_form_open = true;
+        self.compare_open = true;
+        self.compare_error = None;
+        self.compare_selected.clear();
+        cx.notify();
+    }
+
+    fn cancel_compare_form(&mut self, cx: &mut Context<Self>) {
+        self.compare_form_open = false;
+        self.compare_error = None;
+        self.compare_open = self.compare_group.is_some();
+        cx.notify();
+    }
+
+    fn toggle_compare_model(&mut self, model: harness_protocol::ModelRef, cx: &mut Context<Self>) {
+        let existing = self.compare_selected.iter().position(|selected| {
+            selected.id == model.id && selected.provider_id == model.provider_id
+        });
+        if let Some(index) = existing {
+            self.compare_selected.remove(index);
+            self.compare_error = None;
+        } else if self.compare_selected.len() >= MAX_RUNS_PER_GROUP {
+            self.compare_error = Some(format!(
+                "At most {MAX_RUNS_PER_GROUP} models per comparison."
+            ));
+        } else {
+            self.compare_selected.push(model);
+            self.compare_error = None;
+        }
+        cx.notify();
+    }
+
+    fn start_compare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = self.compare_prompt.read(cx).value().to_string();
+        let created = now_ms();
+        let nonce = created as u32 ^ self.run_groups.groups().len() as u32;
+        let group = match run_compare::build_group(&prompt, &self.compare_selected, created, nonce)
+        {
+            Ok(group) => group,
+            Err(message) => {
+                self.compare_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        if let Err(message) = self.run_groups.start(group.clone()) {
+            self.compare_error = Some(message);
+            cx.notify();
+            return;
+        }
+        if !self.engine.start_run_group(self.directory(), group.clone()) {
+            self.run_groups.discard_group(&group.id);
+            self.compare_error = Some("The engine is not running.".into());
+            cx.notify();
+            return;
+        }
+        self.compare_group = Some(group.id);
+        self.compare_open = true;
+        self.compare_form_open = false;
+        self.compare_error = None;
+        self.compare_column = 0;
+        self.compare_prompt
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.compare_selected.clear();
+        self.persist_runs();
+        cx.notify();
+    }
+
+    fn keep_run(&mut self, group_id: &str, run_id: &str, cx: &mut Context<Self>) {
+        match self.run_groups.keep(group_id, run_id) {
+            Ok(()) => {
+                self.compare_error = None;
+                if !self.engine.keep_run(self.directory(), group_id, run_id) {
+                    self.compare_error = Some("The engine is not running.".into());
+                }
+            }
+            Err(message) => self.compare_error = Some(message),
+        }
+        self.persist_runs();
+        cx.notify();
+    }
+
+    fn stop_run(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if !self.engine.interrupt(self.directory(), session_id) {
+            self.compare_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn discard_run(&mut self, group_id: &str, run_id: &str, cx: &mut Context<Self>) {
+        let cleanup = self
+            .run_groups
+            .discard_run(group_id, run_id)
+            .unwrap_or_default();
+        if !self
+            .engine
+            .discard_run(self.directory(), group_id, run_id, cleanup)
+        {
+            self.compare_error = Some("The engine is not running.".into());
+        }
+        self.persist_runs();
+        cx.notify();
+    }
+
+    /// Keep the winner and delete every other run's session and worktree.
+    fn discard_rest(&mut self, group_id: &str, cx: &mut Context<Self>) {
+        let kept_session = self.run_groups.group(group_id).and_then(|group| {
+            let kept = group.kept.as_ref()?;
+            group
+                .runs
+                .iter()
+                .find(|run| &run.id == kept)
+                .and_then(|run| run.session_id.clone())
+        });
+        let runs: Vec<RunDiscard> = self
+            .run_groups
+            .discard_group(group_id)
+            .into_iter()
+            .map(|(run_id, cleanup)| RunDiscard { run_id, cleanup })
+            .collect();
+        if !self
+            .engine
+            .discard_run_group(self.directory(), group_id, runs)
+        {
+            self.compare_error = Some("The engine is not running.".into());
+        }
+        self.compare_open = false;
+        self.compare_form_open = false;
+        self.compare_group = None;
+        if let Some(session) = kept_session {
+            self.pending_open_session = Some(session);
+            self.reload_sessions_across();
+        }
+        self.persist_runs();
+        cx.notify();
+    }
+
+    fn open_kept_in_sidebar(&mut self, group_id: &str, cx: &mut Context<Self>) {
+        let session = self.run_groups.group(group_id).and_then(|group| {
+            let kept = group.kept.as_ref()?;
+            group
+                .runs
+                .iter()
+                .find(|run| &run.id == kept)
+                .and_then(|run| run.session_id.clone())
+        });
+        let Some(session) = session else {
+            self.compare_error = Some("The kept run has no session yet.".into());
+            cx.notify();
+            return;
+        };
+        self.compare_open = false;
+        self.compare_form_open = false;
+        if self
+            .sessions
+            .sessions()
+            .iter()
+            .any(|existing| existing.id == session)
+        {
+            self.sessions.select(&session);
+            self.follow_selection();
+        } else {
+            self.pending_open_session = Some(session);
+            self.reload_sessions_across();
+        }
+        cx.notify();
+    }
+
+    fn close_compare(&mut self, cx: &mut Context<Self>) {
+        self.compare_open = false;
+        self.compare_form_open = false;
+        cx.notify();
     }
 
     fn selected_goal(&self) -> Option<&GoalMachine> {
@@ -2895,7 +3277,8 @@ impl WorkspaceView {
             || self.switcher.is_open()
             || self.transfer.export_open
             || self.transfer.import_preview.is_some()
-            || self.transfer.stats_open;
+            || self.transfer.stats_open
+            || self.compare_open;
         self.renaming = None;
         self.pending_delete = None;
         self.error = None;
@@ -2904,6 +3287,8 @@ impl WorkspaceView {
         self.transfer.export_notice = None;
         self.transfer.import_preview = None;
         self.transfer.stats_open = false;
+        self.compare_form_open = false;
+        self.compare_open = false;
         self.close_picker();
         if had_overlay {
             cx.notify();
@@ -4703,6 +5088,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .px_3()
@@ -4720,6 +5106,13 @@ impl WorkspaceView {
                             ),
                     )
                     .child(div().flex_1())
+                    .child(
+                        Button::new("compare-runs")
+                            .small()
+                            .ghost()
+                            .label("Compare")
+                            .on_click(cx.listener(|this, _, _, cx| this.open_compare(cx))),
+                    )
                     .child(
                         Button::new("import-session")
                             .small()
@@ -5179,6 +5572,425 @@ impl WorkspaceView {
         section.child(bar)
     }
 
+    fn render_compare_form(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let models: Vec<harness_protocol::ModelRef> = self
+            .catalog
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .map(|model| model.model_ref())
+            .collect();
+        let mut chips = div().flex().flex_wrap().gap_2();
+        if models.is_empty() {
+            chips = chips.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child("No models are enabled yet."),
+            );
+        }
+        for (index, model) in models.iter().enumerate() {
+            let selected = self
+                .compare_selected
+                .iter()
+                .any(|picked| picked.id == model.id && picked.provider_id == model.provider_id);
+            let mut chip = Button::new(SharedString::from(format!("compare-model-{index}")))
+                .small()
+                .label(run_compare::model_label(model));
+            chip = if selected {
+                chip.primary()
+            } else {
+                chip.ghost()
+            };
+            let model = model.clone();
+            chips = chips.child(chip.on_click(
+                cx.listener(move |this, _, _, cx| this.toggle_compare_model(model.clone(), cx)),
+            ));
+        }
+
+        let mut form = div()
+            .mx_4()
+            .mt_3()
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(Input::new(&self.compare_prompt).w_full())
+            .child(div().text_xs().text_color(theme.muted).child(format!(
+                "Pick up to {MAX_RUNS_PER_GROUP} models. Each run gets its own worktree.",
+            )))
+            .child(chips)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("compare-cancel")
+                            .small()
+                            .ghost()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_compare_form(cx))),
+                    )
+                    .child(
+                        Button::new("compare-start")
+                            .small()
+                            .primary()
+                            .label("Start")
+                            .disabled(!self.status.is_ready() || self.compare_selected.is_empty())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.start_compare(window, cx)),
+                            ),
+                    ),
+            );
+        if let Some(error) = &self.compare_error {
+            form = form.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(error.clone()),
+            );
+        }
+        form
+    }
+
+    fn render_compare(
+        &mut self,
+        window: &mut Window,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let width = window.viewport_size().width.as_f32();
+        let mut pane = div()
+            .id("compare-pane")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .bg(theme.bg)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_4()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(div().text_sm().child("Compare runs"))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("compare-new")
+                            .small()
+                            .ghost()
+                            .label("New comparison")
+                            .disabled(!self.status.is_ready())
+                            .on_click(cx.listener(|this, _, _, cx| this.open_compare_form(cx))),
+                    )
+                    .child(
+                        Button::new("compare-close")
+                            .small()
+                            .ghost()
+                            .label("Close")
+                            .on_click(cx.listener(|this, _, _, cx| this.close_compare(cx))),
+                    ),
+            );
+
+        if self.compare_form_open {
+            pane = pane.child(self.render_compare_form(theme, cx));
+        }
+
+        let Some(group) = self
+            .compare_group
+            .clone()
+            .and_then(|id| self.run_groups.group(&id).cloned())
+        else {
+            if !self.compare_form_open {
+                pane = pane.child(
+                    div()
+                        .p_6()
+                        .text_sm()
+                        .text_color(theme.muted)
+                        .child("No comparison yet. Run one prompt against several models."),
+                );
+            }
+            return pane;
+        };
+
+        let finished = group
+            .runs
+            .iter()
+            .filter(|run| run.state.is_finished())
+            .count();
+        let layout = run_compare::layout_for(width, group.runs.len());
+
+        match layout {
+            CompareLayout::Tabs => {
+                let index = self.compare_column.min(group.runs.len().saturating_sub(1));
+                let mut tabs = div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_4()
+                    .pt_3()
+                    .flex_wrap();
+                for (position, run) in group.runs.iter().enumerate() {
+                    let mut tab =
+                        Button::new(SharedString::from(format!("compare-tab-{position}")))
+                            .small()
+                            .label(run_compare::model_label(&run.model));
+                    tab = if position == index {
+                        tab.primary()
+                    } else {
+                        tab.ghost()
+                    };
+                    tabs = tabs.child(tab.on_click(cx.listener(move |this, _, _, cx| {
+                        this.compare_column = position;
+                        cx.notify();
+                    })));
+                }
+                pane = pane.child(tabs);
+                if let Some(run) = group.runs.get(index) {
+                    pane = pane.child(
+                        div()
+                            .id("compare-tab-body")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p_3()
+                            .child(self.render_run_column(&group, run, theme, cx)),
+                    );
+                }
+            }
+            CompareLayout::Columns(_) => {
+                let mut columns = div()
+                    .id("compare-columns")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .gap_3()
+                    .p_4()
+                    .overflow_x_scroll();
+                for run in &group.runs {
+                    columns = columns.child(
+                        div()
+                            .min_w(px(260.))
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(self.render_run_column(&group, run, theme, cx)),
+                    );
+                }
+                pane = pane.child(columns);
+            }
+        }
+
+        let kept = group.kept.clone();
+        let can_discard_rest = kept.is_some()
+            && group
+                .runs
+                .iter()
+                .any(|run| run.state != RunState::Discarded && Some(&run.id) != kept.as_ref());
+        let mut footer = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_3()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(format!(
+                        "{finished}/{} finished · {}",
+                        group.runs.len(),
+                        group.prompt
+                    )),
+            );
+        if can_discard_rest {
+            let group_id = group.id.clone();
+            footer = footer.child(
+                Button::new("compare-discard-rest")
+                    .small()
+                    .danger()
+                    .label("Discard the rest")
+                    .on_click(cx.listener(move |this, _, _, cx| this.discard_rest(&group_id, cx))),
+            );
+        }
+        if kept.is_some() {
+            let group_id = group.id.clone();
+            footer = footer.child(
+                Button::new("compare-open-kept")
+                    .small()
+                    .primary()
+                    .label("Open in sidebar")
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_kept_in_sidebar(&group_id, cx)),
+                    ),
+            );
+        }
+        pane = pane.child(footer);
+        if let Some(error) = &self.compare_error {
+            pane = pane.child(
+                div()
+                    .px_4()
+                    .pb_3()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(error.clone()),
+            );
+        }
+        pane
+    }
+
+    fn render_run_column(
+        &self,
+        group: &RunGroup,
+        run: &harness_core::Run,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let kept = group.kept.as_deref() == Some(run.id.as_str());
+        let tone = run_compare::state_tone(&run.state);
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(if kept { theme.accent } else { theme.border })
+            .bg(theme.surface)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(run_compare::model_label(&run.model)),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(compare_tone_color(tone, theme))
+                            .child(run_compare::state_label(&run.state)),
+                    ),
+            );
+
+        let worktree = run
+            .worktree
+            .as_deref()
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+                    .to_string()
+            })
+            .unwrap_or_else(|| "no worktree yet".to_string());
+        column = column.child(div().text_xs().text_color(theme.muted).child(worktree));
+
+        if let RunState::Failed { message } = &run.state {
+            column = column.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(message.clone()),
+            );
+        }
+
+        let tail = run
+            .session_id
+            .as_deref()
+            .and_then(|session| self.run_tails.text(session))
+            .map(|text| run_compare::tail(text, run_compare::TAIL_LIMIT));
+        let placeholder = match &run.state {
+            RunState::Pending => "Waiting for a slot…",
+            RunState::Starting => "Preparing the worktree…",
+            RunState::Running => "Waiting for the first tokens…",
+            RunState::Done => "Finished. Open it in the sidebar to read the reply.",
+            RunState::Discarded => "Discarded.",
+            RunState::Failed { .. } => "The run failed.",
+        };
+        column = column.child(
+            div()
+                .id(SharedString::from(format!("compare-tail-{}", run.id)))
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .text_xs()
+                .text_color(theme.muted)
+                .child(tail.unwrap_or_else(|| placeholder.to_string())),
+        );
+
+        let mut actions = div().flex().items_center().gap_2();
+        if run.state.is_live()
+            && let Some(session) = run.session_id.clone()
+        {
+            let id = SharedString::from(format!("compare-stop-{}", run.id));
+            actions = actions.child(
+                Button::new(id)
+                    .small()
+                    .ghost()
+                    .label("Stop")
+                    .on_click(cx.listener(move |this, _, _, cx| this.stop_run(&session, cx))),
+            );
+        }
+        if !run.state.is_live() && run.state != RunState::Discarded {
+            if kept {
+                actions = actions.child(
+                    Button::new(SharedString::from(format!("compare-kept-{}", run.id)))
+                        .small()
+                        .primary()
+                        .label("Kept"),
+                );
+            } else {
+                let group_id = group.id.clone();
+                let run_id = run.id.clone();
+                actions =
+                    actions.child(
+                        Button::new(SharedString::from(format!("compare-keep-{}", run.id)))
+                            .small()
+                            .primary()
+                            .label("Keep this")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.keep_run(&group_id, &run_id, cx)
+                            })),
+                    );
+                let group_id = group.id.clone();
+                let run_id = run.id.clone();
+                actions = actions.child(
+                    Button::new(SharedString::from(format!("compare-discard-{}", run.id)))
+                        .small()
+                        .ghost()
+                        .label("Discard")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.discard_run(&group_id, &run_id, cx)
+                        })),
+                );
+            }
+        }
+        column.child(actions)
+    }
+
     fn session_row(
         &self,
         session: &Session,
@@ -5378,7 +6190,9 @@ impl WorkspaceView {
             main = main.child(self.reconnect_banner(theme));
         }
 
-        if self.transfer.stats_open {
+        if self.compare_form_open || self.compare_open {
+            main = main.child(self.render_compare(window, theme, cx));
+        } else if self.transfer.stats_open {
             main = main.child(self.stats_pane(theme, cx));
         } else if let Some(session) = self.sessions.selected() {
             if let Some(file) = &self.transfer.import_preview {
@@ -6817,6 +7631,15 @@ fn terminal_color(color: harness_term::Color, default: Hsla) -> Hsla {
         harness_term::Color::Rgb(r, g, b) => {
             rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into()
         }
+    }
+}
+
+fn compare_tone_color(tone: StateTone, theme: Theme) -> Hsla {
+    match tone {
+        StateTone::Muted => theme.muted,
+        StateTone::Live => theme.warning,
+        StateTone::Success => theme.success,
+        StateTone::Danger => theme.danger,
     }
 }
 

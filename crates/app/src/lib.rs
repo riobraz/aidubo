@@ -3,4 +3,5 @@
 pub mod goal_store;
 pub mod notify;
 pub mod persistence;
+pub mod run_store;
 pub mod update;

@@ -409,7 +409,7 @@
         "M11-02"
       ],
       "e2e": "tests/M11-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "blocked"
+      "status": "done"
     },
     {
       "id": "G0",
@@ -490,7 +490,7 @@
         "M11-03"
       ],
       "e2e": "every gate touched by the wave",
-      "status": "blocked"
+      "status": "done"
     }
   ]
 }
