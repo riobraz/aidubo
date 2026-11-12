@@ -1,6 +1,6 @@
 # Plan — Wave 2 execution
 
-Status: draft · 2026-11-12
+Status: in progress · 2026-11-12
 
 ## Goal
 
