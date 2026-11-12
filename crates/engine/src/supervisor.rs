@@ -312,6 +312,18 @@ pub enum EngineEvent {
     GoalContinued { goal: Goal },
     /// The loop ended.
     GoalStopped { goal: Goal, reason: Stopped },
+    /// A run group was accepted; `group` is the initial snapshot.
+    RunGroupStarted { group: harness_core::RunGroup },
+    /// One run changed state or gained a session/worktree.
+    RunStateChanged {
+        group_id: String,
+        run_id: String,
+        state: harness_core::RunState,
+        session_id: Option<String>,
+        worktree: Option<String>,
+    },
+    /// Every run of the group reached a terminal state.
+    RunGroupFinished { group_id: String },
     /// A command could not be completed; the message is safe to display.
     CommandFailed { message: String },
 }
@@ -464,7 +476,15 @@ async fn run_inner(
     // by this runtime, so it is cancelled when the supervisor returns.
     let (goal_commands, goal_command_rx) = tokio::sync::mpsc::unbounded_channel();
     let (goal_stream, goal_stream_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(pump_events(api.clone(), events.clone(), goal_stream));
+    let (run_commands, run_command_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (run_stream, run_stream_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(pump_events(
+        api.clone(),
+        events.clone(),
+        goal_stream,
+        run_commands.clone(),
+        run_stream,
+    ));
     tokio::spawn(
         crate::features::goal::GoalRuntime::new(
             api.clone(),
@@ -473,6 +493,16 @@ async fn run_inner(
             config.goal_auditor_model.clone(),
             goal_command_rx,
             goal_stream_rx,
+        )
+        .run(),
+    );
+    tokio::spawn(
+        crate::features::runs::RunGroupRuntime::new(
+            api.clone(),
+            events.clone(),
+            run_commands.clone(),
+            run_command_rx,
+            run_stream_rx,
         )
         .run(),
     );
@@ -490,6 +520,7 @@ async fn run_inner(
         &mut auth_pollers,
         &mut pty_links,
         &goal_commands,
+        &run_commands,
     )
     .await
     {
@@ -536,6 +567,7 @@ async fn run_inner(
                     &mut auth_pollers,
                     &mut pty_links,
                     &goal_commands,
+                    &run_commands,
                 )
                 .await
                 {
@@ -868,6 +900,7 @@ async fn run_command(
     pollers: &mut AuthPollers,
     pty_links: &mut PtyLinks,
     goal_commands: &tokio::sync::mpsc::UnboundedSender<crate::features::goal::GoalCommand>,
+    run_commands: &tokio::sync::mpsc::UnboundedSender<crate::features::runs::RunCommand>,
 ) -> CommandResult {
     let EngineCommand { directory, kind } = command;
     let directory = match canonical_project_directory(&directory) {
@@ -1622,6 +1655,91 @@ async fn run_command(
                 }),
             }
         }
+        EngineCommandKind::StartRunGroup { group } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = resolve_server_project_id(api, &call_directory) => result,
+            };
+            match result {
+                Ok(project_id) => {
+                    match run_commands.send(crate::features::runs::RunCommand::Start {
+                        group,
+                        project_id,
+                        from: call_directory,
+                    }) {
+                        Ok(()) => CommandResult::None,
+                        Err(_) => event(EngineEvent::CommandFailed {
+                            message: "The run runtime is not available.".into(),
+                        }),
+                    }
+                }
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not start the runs: {message}"),
+                }),
+            }
+        }
+        EngineCommandKind::DiscardRun {
+            group_id,
+            run_id,
+            cleanup,
+        } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = resolve_server_project_id(api, &call_directory) => result,
+            };
+            match result {
+                Ok(project_id) => {
+                    match run_commands.send(crate::features::runs::RunCommand::DiscardRun {
+                        project_id,
+                        group_id,
+                        run_id,
+                        cleanup,
+                    }) {
+                        Ok(()) => CommandResult::None,
+                        Err(_) => event(EngineEvent::CommandFailed {
+                            message: "The run runtime is not available.".into(),
+                        }),
+                    }
+                }
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not discard the run: {message}"),
+                }),
+            }
+        }
+        EngineCommandKind::KeepRun { group_id, run_id } => {
+            match run_commands.send(crate::features::runs::RunCommand::Keep { group_id, run_id }) {
+                Ok(()) => CommandResult::None,
+                Err(_) => event(EngineEvent::CommandFailed {
+                    message: "The run runtime is not available.".into(),
+                }),
+            }
+        }
+        EngineCommandKind::DiscardGroup { group_id, runs } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = resolve_server_project_id(api, &call_directory) => result,
+            };
+            match result {
+                Ok(project_id) => {
+                    match run_commands.send(crate::features::runs::RunCommand::DiscardGroup {
+                        project_id,
+                        group_id,
+                        runs,
+                    }) {
+                        Ok(()) => CommandResult::None,
+                        Err(_) => event(EngineEvent::CommandFailed {
+                            message: "The run runtime is not available.".into(),
+                        }),
+                    }
+                }
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not discard the runs: {message}"),
+                }),
+            }
+        }
         EngineCommandKind::LoadTranscript { session_id } => {
             let call_id = session_id.clone();
             tokio::select! {
@@ -2005,6 +2123,8 @@ async fn pump_events(
     api: SessionApi,
     events: Sender<EngineEvent>,
     goal_events: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    run_commands: tokio::sync::mpsc::UnboundedSender<crate::features::runs::RunCommand>,
+    run_stream: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
 ) {
     let mut backoff = Duration::from_millis(250);
     // Only announce a drop once per outage, not on every reconnect attempt.
@@ -2016,6 +2136,12 @@ async fn pump_events(
                 backoff = Duration::from_millis(250);
                 announced_down = false;
                 tracing::debug!("event stream connected");
+                if run_commands
+                    .send(crate::features::runs::RunCommand::Verify)
+                    .is_err()
+                {
+                    tracing::debug!("the run runtime is gone; skipping verification");
+                }
                 if events.send(EngineEvent::StreamConnected).await.is_err() {
                     return;
                 }
@@ -2040,6 +2166,11 @@ async fn pump_events(
                         ) && goal_events.send(event.clone()).is_err()
                         {
                             tracing::debug!("the goal runtime is gone; dropping a stream event");
+                        }
+                        if matches!(event, StreamEvent::ExecutionFinished { .. })
+                            && run_stream.send(event.clone()).is_err()
+                        {
+                            tracing::debug!("the run runtime is gone; dropping a stream event");
                         }
                         if events.send(EngineEvent::Stream(event)).await.is_err() {
                             return;

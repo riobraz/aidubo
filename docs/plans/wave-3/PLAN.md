@@ -49,8 +49,8 @@ five concurrent runs, cross-project groups, and any new server endpoint.
     worktree/session that must be cleaned up, if they exist.
   - `discard_group(group_id)` — keeps the `kept` run, returns cleanup targets
     for every other run that has one.
-  - `relaunch(groups)` — any `Running`/`Starting` run becomes `Failed` with
-    "Interrupted by relaunch"; the group is never resumed.
+  - `restore(directory, groups)` — any `Running`/`Starting` run becomes
+    `Failed` with "Interrupted by relaunch"; the group is never resumed.
 - All cleanup decisions come from the model, so the engine only executes them.
 
 ### Engine (`crates/engine/src/features/runs.rs`)
@@ -94,14 +94,29 @@ five concurrent runs, cross-project groups, and any new server endpoint.
 
 - [x] M11-03: claim the spec and open this plan.
 - [x] Add `harness_core::runs` and the four core tests.
-- [ ] Add protocol types if the spec needs them and the engine executor with
+- [x] Add protocol types if the spec needs them and the engine executor with
       the concurrency-cap test.
-- [ ] Add app-local group persistence and relaunch interruption.
-- [ ] Add the compare view and wire it into the workspace.
-- [ ] Add `crates/engine/tests/M11-03.rs` and run the node gates.
-- [ ] Close the spec, update the spec table and graph.
-- [ ] G3: workspace gates, the wave's e2e gates, `--validate`, manual checks.
+- [x] Add app-local group persistence and relaunch interruption.
+- [x] Add the compare view and wire it into the workspace.
+- [x] Add `crates/engine/tests/M11-03.rs` and run the node gates.
+- [x] Close the spec, update the spec table and graph.
+- [x] G3: workspace gates, the wave's e2e gates, `--validate`, manual checks.
 - [ ] Close the wave: `STATUS.md`, README, PR and merge.
+
+## Implementation notes
+
+- `RunStateChanged` carries `session_id` and `worktree` in addition to the
+  three fields the spec listed; the view needs both to render a column and to
+  clean up a run without another round trip. Additive, so an older reader still
+  parses `state`.
+- `DiscardRun` and `DiscardGroup` carry the cleanup targets from the core
+  model; the engine merges them with its own handles. `discard_group` in core
+  returns `Vec<(run_id, RunCleanup)>` so each removed run can be reported.
+- The compare pane falls back to tabs below 860 px and shows at most three
+  columns; wider groups scroll horizontally.
+- Persistence is per project and restored only for the startup project
+  (cross-project groups are a spec non-goal). Switching away saves the groups
+  before clearing the view.
 
 ## Test plan
 

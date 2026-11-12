@@ -209,8 +209,9 @@ impl RunGroups {
     }
 
     /// Drop a whole group. The kept run keeps its session and worktree; every
-    /// other run that still holds server resources is reported for cleanup.
-    pub fn discard_group(&mut self, group_id: &str) -> Vec<RunCleanup> {
+    /// other run that still holds server resources is reported for cleanup,
+    /// keyed by run id so the engine can report each one.
+    pub fn discard_group(&mut self, group_id: &str) -> Vec<(String, RunCleanup)> {
         let Some(index) = self.groups.iter().position(|group| group.id == group_id) else {
             return Vec::new();
         };
@@ -220,8 +221,8 @@ impl RunGroups {
             .iter()
             .filter(|run| group.kept.as_deref() != Some(run.id.as_str()))
             .filter(|run| run.state != RunState::Discarded)
-            .map(cleanup_for)
-            .filter(|cleanup| !cleanup.is_empty())
+            .map(|run| (run.id.clone(), cleanup_for(run)))
+            .filter(|(_, cleanup)| !cleanup.is_empty())
             .collect()
     }
 
@@ -381,8 +382,9 @@ mod tests {
 
         let cleanups = groups.discard_group("group-1");
         assert_eq!(cleanups.len(), 1);
-        assert_eq!(cleanups[0].session_id.as_deref(), Some("ses_a"));
-        assert_eq!(cleanups[0].worktree.as_deref(), Some("/tmp/wt-a"));
+        assert_eq!(cleanups[0].0, "a");
+        assert_eq!(cleanups[0].1.session_id.as_deref(), Some("ses_a"));
+        assert_eq!(cleanups[0].1.worktree.as_deref(), Some("/tmp/wt-a"));
         assert!(groups.group("group-1").is_none());
         assert!(groups.discard_group("group-1").is_empty());
     }

@@ -16,8 +16,10 @@ use harness_core::GoalLimits;
 use tokio::sync::oneshot;
 
 pub use features::provider::Secret;
+pub use features::runs::RunDiscard;
 pub use harness_core::{
-    AuditDecision, CapKind, Goal, GoalAction, GoalMachine, GoalRecord, GoalState, Stopped,
+    AuditDecision, CapKind, Goal, GoalAction, GoalMachine, GoalRecord, GoalState, RunCleanup,
+    RunGroup, RunState, Stopped,
 };
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreatePtyRequest, CreateScheduleRequest,
@@ -154,6 +156,26 @@ pub enum EngineCommandKind {
     ResumeGoal {
         goal: Goal,
         limits: GoalLimits,
+    },
+    /// Start one prompt across several models, one worktree and session each.
+    StartRunGroup {
+        group: RunGroup,
+    },
+    /// Discard one run and delete the resources the model says it holds.
+    DiscardRun {
+        group_id: String,
+        run_id: String,
+        cleanup: RunCleanup,
+    },
+    /// Mark one run as the group's keeper.
+    KeepRun {
+        group_id: String,
+        run_id: String,
+    },
+    /// Drop a group; `runs` names what to delete for every run not kept.
+    DiscardGroup {
+        group_id: String,
+        runs: Vec<RunDiscard>,
     },
     /// Create a form. Used by tests and plugins; the app never creates one.
     CreateForm {
@@ -696,6 +718,61 @@ impl Engine {
         limits: GoalLimits,
     ) -> bool {
         self.send(directory, EngineCommandKind::ResumeGoal { goal, limits })
+    }
+
+    /// Start one prompt across several models, one worktree and session each.
+    pub fn start_run_group(&self, directory: impl Into<String>, group: RunGroup) -> bool {
+        self.send(directory, EngineCommandKind::StartRunGroup { group })
+    }
+
+    /// Discard one run and delete the resources the model says it holds.
+    pub fn discard_run(
+        &self,
+        directory: impl Into<String>,
+        group_id: impl Into<String>,
+        run_id: impl Into<String>,
+        cleanup: RunCleanup,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::DiscardRun {
+                group_id: group_id.into(),
+                run_id: run_id.into(),
+                cleanup,
+            },
+        )
+    }
+
+    /// Mark one run as the group's keeper.
+    pub fn keep_run(
+        &self,
+        directory: impl Into<String>,
+        group_id: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::KeepRun {
+                group_id: group_id.into(),
+                run_id: run_id.into(),
+            },
+        )
+    }
+
+    /// Drop a group, deleting every run the model reports as still existing.
+    pub fn discard_run_group(
+        &self,
+        directory: impl Into<String>,
+        group_id: impl Into<String>,
+        runs: Vec<RunDiscard>,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::DiscardGroup {
+                group_id: group_id.into(),
+                runs,
+            },
+        )
     }
 
     /// Create a form. Exposed for tests and plugins; the app never calls it.
