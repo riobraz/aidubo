@@ -154,16 +154,47 @@ pub fn start_engine_with(config: EngineConfig) -> Started {
     }
 }
 
+/// Keep the tail of the child's stderr so an early exit reports why.
+#[derive(Default)]
+struct RecentLogs(std::collections::VecDeque<String>);
+
+impl RecentLogs {
+    fn push(&mut self, line: String) {
+        const KEPT: usize = 8;
+        self.0.push_back(line);
+        if self.0.len() > KEPT {
+            self.0.pop_front();
+        }
+    }
+
+    fn describe(&self) -> String {
+        let lines = self
+            .0
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\nOpenCode output:\n{lines}")
+    }
+}
+
 /// Wait until both the session snapshot and the live stream are up.
 pub fn wait_for_stream(events: &Receiver<EngineEvent>, deadline: Instant) {
     let mut stream = false;
     let mut sessions = false;
+    let mut logs = RecentLogs::default();
     while !(stream && sessions) {
         if Instant::now() >= deadline {
-            panic!("timed out waiting for the startup events");
+            panic!(
+                "timed out waiting for the startup events{}",
+                logs.describe()
+            );
         }
         match events.try_recv() {
-            Ok(EngineEvent::Failed { message }) => panic!("engine failed: {message}"),
+            Ok(EngineEvent::Failed { message }) => {
+                panic!("engine failed: {message}{}", logs.describe())
+            }
+            Ok(EngineEvent::Log(line)) => logs.push(line),
             Ok(EngineEvent::StreamConnected) => stream = true,
             Ok(EngineEvent::SessionsLoaded { .. }) => sessions = true,
             Ok(_) => {}
@@ -181,12 +212,16 @@ pub fn wait_for(
     deadline: Instant,
     mut predicate: impl FnMut(&EngineEvent) -> bool,
 ) -> EngineEvent {
+    let mut logs = RecentLogs::default();
     loop {
         if Instant::now() >= deadline {
-            panic!("timed out waiting for an engine event");
+            panic!("timed out waiting for an engine event{}", logs.describe());
         }
         match events.try_recv() {
-            Ok(EngineEvent::Failed { message }) => panic!("engine failed: {message}"),
+            Ok(EngineEvent::Failed { message }) => {
+                panic!("engine failed: {message}{}", logs.describe())
+            }
+            Ok(EngineEvent::Log(line)) => logs.push(line),
             Ok(event) => {
                 if std::env::var_os("RUST_HARNESS_DEBUG_EVENTS").is_some() {
                     eprintln!("event: {event:?}");
