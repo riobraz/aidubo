@@ -9,6 +9,7 @@ rust-version.workspace = true
 async-channel.workspace = true
 directories.workspace = true
 futures-util.workspace = true
+harness-core.workspace = true
 harness-protocol.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -23,9 +24,6 @@ tracing.workspace = true
 [features]
 # Exposes test doubles that never start a sidecar.
 test-support = []
-
-[dev-dependencies]
-harness-core.workspace = true
 
 # Only the M13-01 e2e test spawns this; it is not part of the app bundle.
 [[bin]]

@@ -6,6 +6,18 @@ Last updated: 2026-11-12
 
 ## Completed
 
+- 2026-11-12 — **M12-01 goals is done** (`28c80a8`). `GoalMachine` in
+  `harness-core` enforces three caps before every audit (10 continuations,
+  200k tokens, 30 minutes) and is covered by ten pure tests. The engine runs
+  the loop as a supervised tokio task fed only by `ExecutionFinished` and
+  `UsageUpdated`, deduped by `event_id`; the auditor is a separate session
+  created once per goal and sees only the objective and the last reply. The
+  app persists the single live goal app-locally (`goal_store.rs`), restores a
+  running goal as `Interrupted`, and never resumes it. The workspace renders
+  a goal bar with caps, Stop, Resume, and Dismiss. The scripted mock provider
+  now answers OpenCode's session-title completion without consuming a turn,
+  which made the node e2e deterministic.
+
 - 2026-11-12 — **M11-02 worktrees is done** (`609a2d5`). The live
   `/openapi.json` was checked before the adapter: `branch` is an existing base
   ref, `from` is the project directory, and the default strategy creates a
@@ -23,11 +35,10 @@ Last updated: 2026-11-12
 
 ## In progress / next
 
-- M12-01 (goals) is next: claim it, add `GoalMachine` and its unit tests before
-  any IO, then the engine loop, app-local persistence, the goal bar, node
-  gates, and the scripted-provider e2e.
-- Then M14-03 (terminal dock). M11-02 is closed, so M11-03 in wave 3 is
-  unblocked for a later wave.
+- M14-03 (terminal dock) is the last wave-2 node and the only ready one.
+  Claim it, add the pure key-encoding and grid batching tests before the dock
+  view, then resize debounce, detach/attach, node gates, and the PTY e2e.
+- After M14-03, close wave 2 with gate `G2`.
 
 ## Blockers
 
@@ -42,14 +53,17 @@ python3 scripts/spec-graph.py --validate
 # ok: 33 nodes, 4 waves
 
 python3 scripts/spec-graph.py --ready
-# M12-01, M14-03 (M11-02 no longer ready; it is done)
+# 1 ready: M14-03 (wave 2, Terminal dock)
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# all pass (2026-11-12)
+# all pass (2026-11-12, after M12-01)
 
 cargo test -p harness-engine --test M11-02
 # 1 passed — temp git repo, real opencode serve, clean shutdown
+
+RUST_HARNESS_MOCK_SCRIPTED_PROVIDER=1 cargo test -p harness-engine --test M12-01
+# 1 passed — 2 main turns, 1 auditor session, GoalStopped(Done), clean shutdown
 ```
 

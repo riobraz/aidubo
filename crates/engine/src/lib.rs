@@ -12,9 +12,13 @@ mod api_tests;
 use std::path::PathBuf;
 
 use async_channel::{Receiver, Sender};
+use harness_core::GoalLimits;
 use tokio::sync::oneshot;
 
 pub use features::provider::Secret;
+pub use harness_core::{
+    AuditDecision, CapKind, Goal, GoalAction, GoalMachine, GoalRecord, GoalState, Stopped,
+};
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreatePtyRequest, CreateScheduleRequest,
     CreateWorktreeRequest, ExecutionOutcome, FileDiff, FileEntry, FormInfo, InboxDelivery,
@@ -25,7 +29,7 @@ pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
 
 /// A catalog snapshot returned by the supervisor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CatalogData {
     Commands(Vec<CommandInfo>),
     Skills(Vec<SkillInfo>),
@@ -40,6 +44,9 @@ pub struct EngineConfig {
     pub project_dir: PathBuf,
     /// Optional explicit path to the `opencode` binary.
     pub binary: Option<PathBuf>,
+    /// Auditor model for goals, from settings. `None` asks the engine to pick
+    /// the cheapest enabled model from `/api/model`.
+    pub goal_auditor_model: Option<ModelRef>,
 }
 
 impl EngineConfig {
@@ -47,11 +54,18 @@ impl EngineConfig {
         Self {
             project_dir: project_dir.into(),
             binary: None,
+            goal_auditor_model: None,
         }
     }
 
     pub fn with_binary(mut self, binary: impl Into<PathBuf>) -> Self {
         self.binary = Some(binary.into());
+        self
+    }
+
+    /// Pin the goal auditor to a model instead of using the cheapest one.
+    pub fn with_goal_auditor_model(mut self, model: ModelRef) -> Self {
+        self.goal_auditor_model = Some(model);
         self
     }
 }
@@ -125,6 +139,21 @@ pub enum EngineCommandKind {
     /// project's worktrees), merged into one snapshot.
     ListSessionsAcross {
         directories: Vec<String>,
+    },
+    /// Start a supervised goal on a session.
+    StartGoal {
+        session_id: String,
+        objective: String,
+        limits: GoalLimits,
+    },
+    /// Stop a running goal.
+    StopGoal {
+        goal_id: String,
+    },
+    /// Resume an interrupted goal after a relaunch.
+    ResumeGoal {
+        goal: Goal,
+        limits: GoalLimits,
     },
     /// Create a form. Used by tests and plugins; the app never creates one.
     CreateForm {
@@ -628,6 +657,45 @@ impl Engine {
             directory,
             EngineCommandKind::ListSessionsAcross { directories },
         )
+    }
+
+    /// Start a supervised goal. The auditor session is created by the engine.
+    pub fn start_goal(
+        &self,
+        directory: impl Into<String>,
+        session_id: impl Into<String>,
+        objective: impl Into<String>,
+        limits: GoalLimits,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::StartGoal {
+                session_id: session_id.into(),
+                objective: objective.into(),
+                limits,
+            },
+        )
+    }
+
+    /// Stop a running goal by id.
+    pub fn stop_goal(&self, directory: impl Into<String>, goal_id: impl Into<String>) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::StopGoal {
+                goal_id: goal_id.into(),
+            },
+        )
+    }
+
+    /// Resume a goal the app marked interrupted. The engine starts a new goal
+    /// runtime around the persisted state and asks the auditor immediately.
+    pub fn resume_goal(
+        &self,
+        directory: impl Into<String>,
+        goal: Goal,
+        limits: GoalLimits,
+    ) -> bool {
+        self.send(directory, EngineCommandKind::ResumeGoal { goal, limits })
     }
 
     /// Create a form. Exposed for tests and plugins; the app never calls it.

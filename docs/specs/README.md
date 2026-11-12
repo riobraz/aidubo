@@ -207,7 +207,7 @@ Update this table when a node closes.
 | M11-01 projects | 1 | done |
 | M11-02 worktrees | 2 | done |
 | M11-03 multi-run | 3 | blocked (M11-02) |
-| M12-01 goals | 2 | ready |
+| M12-01 goals | 2 | done |
 | M12-02 schedules | 1 | done |
 | M12-03 notifications | 1 | done |
 | M13-01 mcp | 1 | done |

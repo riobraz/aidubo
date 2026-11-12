@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
 use futures_util::StreamExt as _;
+use harness_core::{AuditDecision, Goal, GoalLimits, Stopped};
 use harness_protocol::{
     AcceptedPrompt, AttemptStatus, AuthStatus, CatalogKind, ModelRef, PermissionRequest, ProjectId,
     Session, SessionList, SessionMessage, StreamEvent,
@@ -303,6 +304,14 @@ pub enum EngineEvent {
         request_id: u64,
         result: Result<harness_protocol::SessionStats, String>,
     },
+    /// A goal was started or resumed; the snapshot is authoritative.
+    GoalStarted { goal: Goal, limits: GoalLimits },
+    /// The auditor answered.
+    GoalAudited { goal: Goal, decision: AuditDecision },
+    /// The auditor asked for another turn, which was queued.
+    GoalContinued { goal: Goal },
+    /// The loop ended.
+    GoalStopped { goal: Goal, reason: Stopped },
     /// A command could not be completed; the message is safe to display.
     CommandFailed { message: String },
 }
@@ -453,7 +462,20 @@ async fn run_inner(
 
     // Follow server events for the lifetime of the sidecar. The task is owned
     // by this runtime, so it is cancelled when the supervisor returns.
-    tokio::spawn(pump_events(api.clone(), events.clone()));
+    let (goal_commands, goal_command_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (goal_stream, goal_stream_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(pump_events(api.clone(), events.clone(), goal_stream));
+    tokio::spawn(
+        crate::features::goal::GoalRuntime::new(
+            api.clone(),
+            events.clone(),
+            startup_directory.clone(),
+            config.goal_auditor_model.clone(),
+            goal_command_rx,
+            goal_stream_rx,
+        )
+        .run(),
+    );
 
     // Populate the sidebar as soon as the engine is usable.
     let mut plugin_check_at: Option<std::time::Instant> = None;
@@ -467,6 +489,7 @@ async fn run_inner(
         events,
         &mut auth_pollers,
         &mut pty_links,
+        &goal_commands,
     )
     .await
     {
@@ -512,6 +535,7 @@ async fn run_inner(
                     events,
                     &mut auth_pollers,
                     &mut pty_links,
+                    &goal_commands,
                 )
                 .await
                 {
@@ -832,6 +856,9 @@ async fn list_sessions_across(
     Ok(sessions)
 }
 
+// The supervisor owns every long-lived link and passes them by reference so a
+// command never has to look any of them up globally.
+#[allow(clippy::too_many_arguments)]
 async fn run_command(
     api: &mut SessionApi,
     command: EngineCommand,
@@ -840,6 +867,7 @@ async fn run_command(
     event_tx: &Sender<EngineEvent>,
     pollers: &mut AuthPollers,
     pty_links: &mut PtyLinks,
+    goal_commands: &tokio::sync::mpsc::UnboundedSender<crate::features::goal::GoalCommand>,
 ) -> CommandResult {
     let EngineCommand { directory, kind } = command;
     let directory = match canonical_project_directory(&directory) {
@@ -1556,6 +1584,44 @@ async fn run_command(
                 },
             })
         }
+        EngineCommandKind::StartGoal {
+            session_id,
+            objective,
+            limits,
+        } => {
+            let objective = objective.trim().to_owned();
+            if objective.is_empty() {
+                return event(EngineEvent::CommandFailed {
+                    message: "A goal needs an objective.".into(),
+                });
+            }
+            match goal_commands.send(crate::features::goal::GoalCommand::Start {
+                session_id,
+                objective,
+                limits,
+            }) {
+                Ok(()) => CommandResult::None,
+                Err(_) => event(EngineEvent::CommandFailed {
+                    message: "The goal runtime is not available.".into(),
+                }),
+            }
+        }
+        EngineCommandKind::StopGoal { goal_id } => {
+            match goal_commands.send(crate::features::goal::GoalCommand::Stop { goal_id }) {
+                Ok(()) => CommandResult::None,
+                Err(_) => event(EngineEvent::CommandFailed {
+                    message: "The goal runtime is not available.".into(),
+                }),
+            }
+        }
+        EngineCommandKind::ResumeGoal { goal, limits } => {
+            match goal_commands.send(crate::features::goal::GoalCommand::Resume { goal, limits }) {
+                Ok(()) => CommandResult::None,
+                Err(_) => event(EngineEvent::CommandFailed {
+                    message: "The goal runtime is not available.".into(),
+                }),
+            }
+        }
         EngineCommandKind::LoadTranscript { session_id } => {
             let call_id = session_id.clone();
             tokio::select! {
@@ -1935,7 +2001,11 @@ async fn read_import(path: &Path) -> Result<harness_protocol::SessionTransfer, S
 ///
 /// Reconnects with exponential backoff; the server replays nothing, so the
 /// view reloads the transcript when a turn ends or the stream reopens.
-async fn pump_events(api: SessionApi, events: Sender<EngineEvent>) {
+async fn pump_events(
+    api: SessionApi,
+    events: Sender<EngineEvent>,
+    goal_events: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+) {
     let mut backoff = Duration::from_millis(250);
     // Only announce a drop once per outage, not on every reconnect attempt.
     let mut announced_down = false;
@@ -1963,6 +2033,14 @@ async fn pump_events(api: SessionApi, events: Sender<EngineEvent>) {
                         let Some(event) = events::parse_event(&data) else {
                             continue;
                         };
+                        if matches!(
+                            event,
+                            StreamEvent::ExecutionFinished { .. }
+                                | StreamEvent::UsageUpdated { .. }
+                        ) && goal_events.send(event.clone()).is_err()
+                        {
+                            tracing::debug!("the goal runtime is gone; dropping a stream event");
+                        }
                         if events.send(EngineEvent::Stream(event)).await.is_err() {
                             return;
                         }

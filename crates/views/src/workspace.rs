@@ -12,11 +12,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use harness_core::{
-    AuthFlow, Content, ContextStore, DiffLineKind, DiffRow, DraftSend, EngineStatus, Entry,
-    FormStore, InboxStore, McpStore, Notification, NotifyContext, NotifyInput, NotifyKind,
-    NotifyPolicy, NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
-    PickerKind, PickerState, PluginStore, ProjectDrafts, ProjectStore, PromptDraft, ProviderStore,
-    RevertStore, SNIPPETS, SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus,
+    AuditDecision, AuthFlow, CapKind, Content, ContextStore, DiffLineKind, DiffRow, DraftSend,
+    EngineStatus, Entry, FormStore, Goal, GoalLimits, GoalMachine, GoalRecord, GoalState,
+    InboxStore, McpStore, Notification, NotifyContext, NotifyInput, NotifyKind, NotifyPolicy,
+    NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem, PickerKind, PickerState,
+    PluginStore, ProjectDrafts, ProjectStore, PromptDraft, ProviderStore, RevertStore, SNIPPETS,
+    SavedPermissionStore, ScheduleStore, SessionStore, Stopped, ToolCall, ToolStatus,
     TranscriptStore, TransferStore, UsageStore, VcsStore, WorktreeStore, describe_when,
     failure_reason, flatten, group_sessions_by_directory, import_error, next_run_label, now_ms,
     parse_patch, path_to_file_uri, relative_time, sessions_in_directory, url_host,
@@ -162,6 +163,9 @@ pub struct ProjectSnapshot {
 /// Where the app sends snapshots; the view never touches the disk itself.
 pub type ProjectSink = Arc<dyn Fn(ProjectSnapshot) + Send + Sync>;
 
+/// Where the app persists the single live goal; the view never touches disk.
+pub type GoalSink = Arc<dyn Fn(Option<GoalRecord>) + Send + Sync>;
+
 /// Root view. Owns the engine handle so the child is stopped when the view is
 /// dropped at app exit.
 pub struct WorkspaceView {
@@ -183,6 +187,16 @@ pub struct WorkspaceView {
     worktree_name: Entity<InputState>,
     /// Worktree directory awaiting remove confirmation.
     pending_worktree_remove: Option<String>,
+    /// The active goal, if any. Only one runs per app.
+    goal: Option<GoalMachine>,
+    /// Project directory the goal belongs to; goals are per project.
+    goal_directory: Option<String>,
+    goal_form_open: bool,
+    goal_objective: Entity<InputState>,
+    goal_error: Option<String>,
+    /// The auditor's last decision, shown while the loop is running.
+    goal_note: Option<String>,
+    goal_sink: Option<GoalSink>,
     /// Startup notice about saved projects that could not be reopened.
     projects_notice: Option<String>,
     /// Last command error, shown until dismissed or superseded.
@@ -362,6 +376,8 @@ impl WorkspaceView {
         let worktree_branch =
             cx.new(|cx| InputState::new(window, cx).placeholder("base branch or ref (optional)"));
         let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("worktree name"));
+        let goal_objective =
+            cx.new(|cx| InputState::new(window, cx).placeholder("What should the agent finish?"));
         let form_subscription =
             cx.subscribe_in(&form_input, window, |this, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -410,6 +426,13 @@ impl WorkspaceView {
             worktree_branch,
             worktree_name,
             pending_worktree_remove: None,
+            goal: None,
+            goal_directory: None,
+            goal_form_open: false,
+            goal_objective,
+            goal_error: None,
+            goal_note: None,
+            goal_sink: None,
             projects_notice: None,
             error: None,
             renaming: None,
@@ -502,6 +525,44 @@ impl WorkspaceView {
         self.projects_sink = Some(sink);
         self.persist_projects();
         self
+    }
+
+    /// Restore the goal saved by the previous run. A goal that was running is
+    /// marked `Interrupted`; it is never resumed silently.
+    pub fn restore_saved_goal(mut self, record: Option<GoalRecord>) -> Self {
+        if let Some(record) = record
+            && record.directory == self.directory()
+        {
+            self.goal_directory = Some(record.directory.clone());
+            self.goal = Some(GoalMachine::restore(record.goal, record.limits));
+            self.persist_goal();
+        }
+        self
+    }
+
+    /// Attach the app-owned goal sink and record the current state once.
+    pub fn persist_goal_with(mut self, sink: GoalSink) -> Self {
+        self.goal_sink = Some(sink);
+        self.persist_goal();
+        self
+    }
+
+    fn persist_goal(&self) {
+        let Some(sink) = &self.goal_sink else {
+            return;
+        };
+        let record = match &self.goal {
+            Some(machine) if machine.is_running() || machine.is_interrupted() => Some(GoalRecord {
+                directory: self
+                    .goal_directory
+                    .clone()
+                    .unwrap_or_else(|| self.directory()),
+                goal: machine.goal().clone(),
+                limits: machine.limits(),
+            }),
+            _ => None,
+        };
+        sink(record);
     }
 
     fn persist_projects(&self) {
@@ -834,6 +895,48 @@ impl WorkspaceView {
                 }
             }
             EngineEvent::SessionMoved { .. } => self.reload_sessions_across(),
+            EngineEvent::GoalStarted { goal, limits } => {
+                let session_id = goal.session_id.clone();
+                let changed = self.sessions.selected_id() != Some(session_id.as_str());
+                self.goal_directory = Some(self.directory());
+                match self.goal.as_mut() {
+                    Some(machine) if machine.goal().id == goal.id => machine.sync_goal(goal),
+                    _ => self.goal = Some(GoalMachine::new(goal, limits)),
+                }
+                self.goal_form_open = false;
+                self.goal_error = None;
+                self.goal_note = None;
+                self.persist_goal();
+                if self
+                    .sessions
+                    .sessions()
+                    .iter()
+                    .any(|session| session.id == session_id)
+                    && changed
+                {
+                    self.sessions.select(&session_id);
+                    self.follow_selection();
+                }
+            }
+            EngineEvent::GoalAudited { goal, decision } => {
+                self.sync_goal(goal);
+                self.goal_note = Some(match decision {
+                    AuditDecision::Continue { next } => format!("Next: {next}"),
+                    AuditDecision::Finish { reason } => format!("Done: {reason}"),
+                    AuditDecision::Block { reason } => format!("Blocked: {reason}"),
+                });
+                self.persist_goal();
+            }
+            EngineEvent::GoalContinued { goal } => {
+                self.sync_goal(goal);
+                self.persist_goal();
+            }
+            EngineEvent::GoalStopped { goal, .. } => {
+                self.sync_goal(goal);
+                self.goal_note = None;
+                self.goal_form_open = false;
+                self.persist_goal();
+            }
             EngineEvent::SessionExported {
                 session_id,
                 path,
@@ -1230,6 +1333,8 @@ impl WorkspaceView {
         self.worktree_form_open = false;
         self.worktree_error = None;
         self.pending_worktree_remove = None;
+        self.goal_form_open = false;
+        self.goal_error = None;
     }
 
     /// Reload the server-backed lists that are scoped to a directory.
@@ -1272,6 +1377,98 @@ impl WorkspaceView {
         } else {
             self.engine.list_sessions_across(directory, directories);
         }
+    }
+
+    fn open_goal_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.goal_form_open = true;
+        self.goal_error = None;
+        self.goal_objective
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.goal_objective
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    fn start_goal(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.sessions.selected_id().map(str::to_owned) else {
+            self.goal_error = Some("Select a session first.".into());
+            cx.notify();
+            return;
+        };
+        let objective = self.goal_objective.read(cx).value().trim().to_owned();
+        if objective.is_empty() {
+            self.goal_error = Some("A goal needs an objective.".into());
+            cx.notify();
+            return;
+        }
+        self.goal_error = None;
+        if !self.engine.start_goal(
+            self.directory(),
+            session_id,
+            objective,
+            GoalLimits::default(),
+        ) {
+            self.goal_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn stop_goal(&mut self, cx: &mut Context<Self>) {
+        let Some(machine) = self.goal.as_ref() else {
+            return;
+        };
+        let goal_id = machine.goal().id.clone();
+        self.goal_error = None;
+        if !self.engine.stop_goal(self.directory(), goal_id) {
+            self.goal_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn resume_goal(&mut self, cx: &mut Context<Self>) {
+        let Some(machine) = self.goal.as_ref() else {
+            return;
+        };
+        if !machine.is_interrupted() {
+            return;
+        }
+        let goal = machine.goal().clone();
+        let limits = machine.limits();
+        self.goal_error = None;
+        self.goal_note = None;
+        if !self.engine.resume_goal(self.directory(), goal, limits) {
+            self.goal_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn dismiss_goal(&mut self, cx: &mut Context<Self>) {
+        self.goal = None;
+        self.goal_directory = None;
+        self.goal_note = None;
+        self.goal_error = None;
+        self.persist_goal();
+        cx.notify();
+    }
+
+    fn sync_goal(&mut self, goal: Goal) {
+        if let Some(machine) = self.goal.as_mut()
+            && machine.goal().id == goal.id
+        {
+            machine.sync_goal(goal);
+        }
+    }
+
+    fn selected_goal(&self) -> Option<&GoalMachine> {
+        let goal = self.goal.as_ref()?;
+        let directory = self.directory();
+        if self.goal_directory.as_deref() != Some(directory.as_str()) {
+            return None;
+        }
+        if self.sessions.selected_id() != Some(goal.goal().session_id.as_str()) {
+            return None;
+        }
+        Some(goal)
     }
 
     fn open_worktree_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4530,6 +4727,153 @@ impl WorkspaceView {
         section
     }
 
+    fn render_goal(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let section = div().flex().flex_col();
+
+        if self.goal_form_open {
+            let limits = GoalLimits::default();
+            let caps = format!(
+                "Caps: {} continuations · {} tokens · {} minutes. Invalid auditor output stops the loop.",
+                limits.max_continuations,
+                compact_count(limits.token_budget as f64),
+                limits.max_wall_clock_secs / 60
+            );
+            let mut form = div()
+                .mx_4()
+                .mb_2()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface)
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(Input::new(&self.goal_objective).w_full())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().text_xs().text_color(theme.muted).child(caps))
+                        .child(
+                            Button::new("goal-start")
+                                .small()
+                                .primary()
+                                .label("Start")
+                                .disabled(!self.status.is_ready())
+                                .on_click(cx.listener(|this, _, _, cx| this.start_goal(cx))),
+                        )
+                        .child(
+                            Button::new("goal-cancel")
+                                .small()
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.goal_form_open = false;
+                                    this.goal_error = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            if let Some(error) = &self.goal_error {
+                form = form.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .child(error.clone()),
+                );
+            }
+            return section.child(form);
+        }
+
+        let Some(machine) = self.selected_goal() else {
+            return section;
+        };
+        let goal = machine.goal();
+        let limits = machine.limits();
+        let running = machine.is_running();
+        let interrupted = machine.is_interrupted();
+        let state = goal_state_label(&goal.state);
+        let counters = format!(
+            "{}/{} continuations · {} / {} tokens",
+            goal.continuations,
+            limits.max_continuations,
+            compact_count(goal.tokens_used as f64),
+            compact_count(limits.token_budget as f64)
+        );
+
+        let mut actions = div().flex().items_center().gap_2();
+        if running {
+            actions = actions.child(
+                Button::new("goal-stop")
+                    .small()
+                    .danger()
+                    .label("Stop")
+                    .on_click(cx.listener(|this, _, _, cx| this.stop_goal(cx))),
+            );
+        } else if interrupted {
+            actions = actions.child(
+                Button::new("goal-resume")
+                    .small()
+                    .primary()
+                    .label("Resume")
+                    .disabled(!self.status.is_ready())
+                    .on_click(cx.listener(|this, _, _, cx| this.resume_goal(cx))),
+            );
+        } else {
+            actions = actions.child(
+                Button::new("goal-dismiss")
+                    .small()
+                    .ghost()
+                    .label("Dismiss")
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_goal(cx))),
+            );
+        }
+
+        let mut bar = div()
+            .id("goal-bar")
+            .mx_4()
+            .mb_2()
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(if running { theme.accent } else { theme.border })
+            .bg(theme.surface)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(goal.objective.clone()),
+                    )
+                    .child(div().text_xs().text_color(theme.muted).child(state))
+                    .child(div().flex_1())
+                    .child(actions),
+            )
+            .child(div().text_xs().text_color(theme.muted).child(counters));
+        if let Some(note) = &self.goal_note {
+            bar = bar.child(div().text_xs().text_color(theme.muted).child(note.clone()));
+        }
+        if let Some(error) = &self.goal_error {
+            bar = bar.child(
+                div()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child(error.clone()),
+            );
+        }
+        section.child(bar)
+    }
+
     fn session_row(
         &self,
         session: &Session,
@@ -4763,6 +5107,14 @@ impl WorkspaceView {
                     .on_click(cx.listener(|this, _, _, cx| this.open_stats(cx))),
             )
             .child(
+                Button::new("goal-session")
+                    .small()
+                    .ghost()
+                    .label("Goal")
+                    .disabled(!self.status.is_ready())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_goal_form(window, cx))),
+            )
+            .child(
                 Button::new("rename-session")
                     .small()
                     .ghost()
@@ -4786,6 +5138,8 @@ impl WorkspaceView {
         if let Some(input) = &self.renaming {
             pane = pane.child(self.rename_panel(input, theme, cx));
         }
+
+        pane = pane.child(self.render_goal(theme, cx));
 
         if self.transfer.export_open {
             pane = pane.child(self.export_panel(theme, cx));
@@ -5943,6 +6297,27 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
         out.push_str("\n… (truncated)");
     }
     out
+}
+
+fn goal_state_label(state: &GoalState) -> String {
+    match state {
+        GoalState::Running => "Running".into(),
+        GoalState::Interrupted => "Interrupted — resume or dismiss".into(),
+        GoalState::Stopped(stopped) => match stopped {
+            Stopped::Done { reason } => format!("Done — {reason}"),
+            Stopped::Blocked { reason } => format!("Blocked — {reason}"),
+            Stopped::Cap { which } => format!(
+                "Stopped at the {} cap",
+                match which {
+                    CapKind::Continuations => "continuation",
+                    CapKind::Tokens => "token",
+                    CapKind::WallClock => "time",
+                }
+            ),
+            Stopped::Error { message } => format!("Error — {message}"),
+            Stopped::User => "Stopped by the user".into(),
+        },
+    }
 }
 
 fn session_subtitle(session: &Session) -> SharedString {

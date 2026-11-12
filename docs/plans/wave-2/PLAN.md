@@ -1,6 +1,6 @@
 # Plan — Wave 2 execution
 
-Status: draft · 2026-11-12
+Status: in progress · 2026-11-12
 
 ## Goal
 
@@ -102,10 +102,10 @@ onto a small diff.
       gates and the e2e.
 - [x] M11-02: close the spec (`Status: done`), record the commit in its
       `STATUS.md`, and update the spec table.
-- [ ] M12-01: claim, add `GoalMachine` and its six unit tests before any IO,
-      then the engine loop, app-local persistence, goal bar, node gates, and
-      the scripted-provider e2e.
-- [ ] M12-01: close the spec and update the status table.
+- [x] M12-01: claim, add `GoalMachine` and its unit tests before any IO, then
+      the engine loop, app-local persistence, goal bar, node gates, and the
+      scripted-provider e2e.
+- [x] M12-01: close the spec and update the status table.
 - [ ] M14-03: claim, add the pure key-encoding tests and grid batching test,
       then the dock view, resize debounce, detach/attach, node gates, and the
       PTY e2e.
