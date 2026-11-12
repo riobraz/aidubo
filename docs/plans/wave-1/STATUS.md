@@ -2,9 +2,19 @@
 
 Status: in progress
 
-Last updated: 2026-11-11
+Last updated: 2026-11-12
 
 ## Completed
+
+- 2026-11-12 — **Crash fix: duplicate a11y node id in the Providers section.**
+  Opening a project panicked in debug builds with `Duplicate a11y node id` once
+  the platform accessibility tree was built (an AX client attached or the
+  window gained focus). Two providers (`Default / OpenCode` and `OpenCode Go`)
+  share `integrationID = "opencode"`, and the Connect button was keyed by
+  `integration.id`, so both rendered the same GPUI `ElementId`
+  (`provider-connect-opencode`) under the same ancestor path. The button is now
+  keyed by the provider's own `id`. Verified by focusing a build with the fix
+  and walking the AX tree: no panic with the transcript and providers loaded.
 
 - 2026-11-11 — **M16-01 done (Linux verification pending CI).** Linux
   packaging. `locate_binary` now checks packaged sidecars first: macOS

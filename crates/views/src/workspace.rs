@@ -3573,7 +3573,7 @@ impl WorkspaceView {
                                 .child(
                                     Button::new(SharedString::from(format!(
                                         "provider-connect-{}",
-                                        integration.id
+                                        provider.id
                                     )))
                                     .small()
                                     .ghost()
