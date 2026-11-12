@@ -75,6 +75,14 @@ struct StepStartedData {
 }
 
 #[derive(Debug, Deserialize)]
+struct SessionMovedData {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(default)]
+    directory: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct FormCreatedData {
     form: FormInfo,
 }
@@ -301,6 +309,16 @@ pub(crate) fn parse_event(json: &str) -> Option<StreamEvent> {
             StreamEvent::CompactionFailed {
                 session_id: data.session_id,
                 message,
+            }
+        }
+        "worktree.created" | "worktree.updated" | "worktree.resolved" => {
+            StreamEvent::WorktreesChanged
+        }
+        "session.moved" => {
+            let data: SessionMovedData = serde_json::from_value(data).ok()?;
+            StreamEvent::SessionMoved {
+                session_id: data.session_id,
+                directory: data.directory,
             }
         }
         "filesystem.changed" => StreamEvent::FilesystemChanged,

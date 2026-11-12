@@ -432,6 +432,8 @@ impl TranscriptStore {
             | StreamEvent::CompactionStarted { .. }
             | StreamEvent::CompactionEnded { .. }
             | StreamEvent::CompactionFailed { .. }
+            | StreamEvent::WorktreesChanged
+            | StreamEvent::SessionMoved { .. }
             | StreamEvent::McpChanged => false,
         }
     }

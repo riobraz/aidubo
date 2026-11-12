@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | blocked (M11-01) |
+| Status | done |
 | Wave | 2 |
 | Size | L |
 | Depends on | M11-01 |
@@ -28,6 +28,18 @@ leaves an orphan worktree it created without telling the user.
 
 `Worktree.CreateInput` = `{projectID, from, branch, directory, name}`.
 `Worktree.RemoveInput` = `{projectID, directory, force}`.
+
+Verified against a live server (opencode 2.2.7, `/openapi.json`):
+
+- `branch` is an existing git ref, not a new branch name. Omitted means the
+  `HEAD` of `from`.
+- `from` is the project directory (an `AbsolutePath`), not a ref.
+- The server's default strategy creates a **detached** worktree; it does not
+  create a branch. The app therefore treats the worktree as an isolated
+  checkout of the chosen base ref, not as a feature branch.
+- Omitting `directory` places the worktree under the server's own worktree
+  root; the app never guesses that path.
+
 Errors: `WorktreeError`, `ProjectNotFound`.
 Events: `worktree.created`, `worktree.updated`, `worktree.resolved`,
 `session.moved`.
@@ -38,8 +50,8 @@ Events: `worktree.created`, `worktree.updated`, `worktree.resolved`,
 pub struct Worktree { pub directory: String, pub strategy: Option<String> }
 
 pub struct CreateWorktreeRequest {
-    pub project_id: String, pub from: String, pub branch: String,
-    pub directory: String, pub name: String,
+    pub project_id: String, pub from: String, pub branch: Option<String>,
+    pub directory: Option<String>, pub name: String,
 }
 
 pub struct RemoveWorktreeRequest {
@@ -48,7 +60,7 @@ pub struct RemoveWorktreeRequest {
 ```
 
 Fixture: a list with `strategy` present and absent; a create response with only
-`directory`.
+`directory`; a create body with and without `branch`.
 
 ## 4. Engine
 
@@ -75,13 +87,15 @@ Rules:
 - On launch, a registry path that no longer exists is dropped silently; a path
   that exists but is not in the server list is shown as "orphan" with Remove.
 - Branch names are validated locally (no spaces, no `..`, no leading `-`) and
-  the server error is shown verbatim if it still rejects.
+  the server error is shown verbatim if it still rejects. The base ref is
+  optional. The server lists the project itself in the worktree collection, so
+  `apply_snapshot` filters the project directory out of the rows.
 - `force: true` is only used after the user confirms a dirty worktree.
 
 ## 6. UI
 
 A worktree chip in the project header opens a picker: existing worktrees, a
-"New worktree" form (name, branch, base ref), and per-row Remove. The session
+"New worktree" form (name, optional base ref), and per-row Remove. The session
 list groups sessions by worktree under the project. Removing a worktree shows
 the absolute path and how many sessions will be deleted.
 
@@ -97,7 +111,8 @@ config.
 | protocol | `worktree_list_parses_strategy_optional` | optional field |
 | core | `worktree_orphan_detected_on_launch` | registry vs server |
 | core | `worktree_remove_drops_sessions` | session cleanup |
-| core | `branch_name_validation` | local guard |
+| core | `base_ref_validation` | local guard |
+| core | `project_root_is_not_a_worktree_row` | server lists the project |
 | engine | `create_worktree_body_shape` | wire shape |
 
 E2E (`tests/M11-02.rs`, no model gate): temp git repo with one commit,
@@ -109,10 +124,12 @@ assertion: the filesystem and git, not local events.
 
 ## 9. Acceptance
 
-- [ ] A created worktree is a real directory with a real branch.
-- [ ] A session opened there is scoped to it.
-- [ ] Remove deletes the directory and its sessions, or explains why not.
-- [ ] An app-created worktree is never left behind without a notice.
+- [x] A created worktree is a real directory registered with git, checked out
+  from the chosen base ref (the server's strategy detaches `HEAD`; it does not
+  create a branch).
+- [x] A session opened there is scoped to it.
+- [x] Remove deletes the directory and its sessions, or explains why not.
+- [x] An app-created worktree is never left behind without a notice.
 
 ## 10. Risks
 

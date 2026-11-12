@@ -22,3 +22,4 @@ pub(crate) mod transcript;
 pub(crate) mod transfer;
 pub(crate) mod usage;
 pub(crate) mod vcs;
+pub(crate) mod worktrees;

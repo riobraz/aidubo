@@ -25,6 +25,7 @@ mod transfer;
 mod usage;
 mod util;
 mod vcs;
+mod worktrees;
 
 pub use composer::*;
 pub use context::*;
@@ -47,6 +48,7 @@ pub use transfer::*;
 pub use usage::*;
 pub use util::*;
 pub use vcs::*;
+pub use worktrees::*;
 
 #[cfg(test)]
 mod tests;

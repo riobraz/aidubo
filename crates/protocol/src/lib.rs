@@ -24,6 +24,7 @@ mod transfer;
 mod update;
 mod usage;
 mod vcs;
+mod worktree;
 
 pub use diff::*;
 pub use form::*;
@@ -40,6 +41,7 @@ pub use transfer::*;
 pub use update::*;
 pub use usage::*;
 pub use vcs::*;
+pub use worktree::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -803,6 +805,14 @@ pub enum StreamEvent {
         tokens: TokenUsage,
         cost: Option<f64>,
     },
+    /// A worktree was created, updated, or rediscovered. The list is reloaded
+    /// instead of patching one entry, because the server is authoritative.
+    WorktreesChanged,
+    /// A session was moved to another directory.
+    SessionMoved {
+        session_id: String,
+        directory: String,
+    },
     /// The project's files changed on disk. The payload is not needed: the
     /// view refreshes its own snapshots.
     FilesystemChanged,
@@ -837,7 +847,8 @@ impl StreamEvent {
             | Self::CompactionEnded { session_id }
             | Self::CompactionFailed { session_id, .. } => session_id,
             Self::UsageUpdated { session_id, .. } => session_id,
-            Self::FilesystemChanged | Self::McpChanged => "",
+            Self::SessionMoved { session_id, .. } => session_id,
+            Self::WorktreesChanged | Self::FilesystemChanged | Self::McpChanged => "",
         }
     }
 }

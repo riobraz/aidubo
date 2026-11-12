@@ -17,8 +17,9 @@ use tokio::sync::oneshot;
 pub use features::provider::Secret;
 pub use harness_protocol::{
     AgentInfo, CatalogKind, CommandInfo, CommandRequest, CreatePtyRequest, CreateScheduleRequest,
-    ExecutionOutcome, FileDiff, FileEntry, FormInfo, InboxDelivery, InboxInfo, ModelInfo, ModelRef,
-    PermissionReply, Project, ProjectId, PromptRequest, SkillInfo, StatsRange, StreamEvent,
+    CreateWorktreeRequest, ExecutionOutcome, FileDiff, FileEntry, FormInfo, InboxDelivery,
+    InboxInfo, ModelInfo, ModelRef, PermissionReply, Project, ProjectId, PromptRequest,
+    RemoveWorktreeRequest, SkillInfo, StatsRange, StreamEvent, Worktree,
 };
 pub use locate::{LocateError, locate_binary};
 pub use supervisor::EngineEvent;
@@ -95,6 +96,35 @@ pub enum EngineCommandKind {
     },
     DeleteSession {
         id: String,
+    },
+    /// Reload the active project's worktrees.
+    ListWorktrees {
+        request_id: u64,
+    },
+    /// Create a worktree on a new branch. The server chooses the directory.
+    CreateWorktree {
+        from: String,
+        branch: String,
+        name: String,
+    },
+    /// Remove a worktree; `force` requires an explicit user confirmation.
+    RemoveWorktree {
+        directory: String,
+        force: bool,
+    },
+    /// Ask the server to rediscover worktrees from the filesystem.
+    RefreshWorktrees {
+        request_id: u64,
+    },
+    /// Move a session to another directory (for example a worktree).
+    MoveSession {
+        session_id: String,
+        directory: String,
+    },
+    /// Reload sessions for the project root and additional directories (the
+    /// project's worktrees), merged into one snapshot.
+    ListSessionsAcross {
+        directories: Vec<String>,
     },
     /// Create a form. Used by tests and plugins; the app never creates one.
     CreateForm {
@@ -518,6 +548,85 @@ impl Engine {
         self.send(
             directory,
             EngineCommandKind::DeleteSession { id: id.into() },
+        )
+    }
+
+    /// Reload the project's worktrees. The result names the canonical project
+    /// directory it belongs to, so a late reply from another project is ignored.
+    pub fn load_worktrees(&self, directory: impl Into<String>, request_id: u64) -> bool {
+        self.send(directory, EngineCommandKind::ListWorktrees { request_id })
+    }
+
+    /// Create a worktree on a new branch from `from`. The server picks the
+    /// worktree path and the reply carries it.
+    pub fn create_worktree(
+        &self,
+        directory: impl Into<String>,
+        from: impl Into<String>,
+        branch: impl Into<String>,
+        name: impl Into<String>,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::CreateWorktree {
+                from: from.into(),
+                branch: branch.into(),
+                name: name.into(),
+            },
+        )
+    }
+
+    /// Remove a worktree. `force` is only sent after the user confirms that a
+    /// dirty checkout may be lost.
+    pub fn remove_worktree(
+        &self,
+        directory: impl Into<String>,
+        worktree: impl Into<String>,
+        force: bool,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::RemoveWorktree {
+                directory: worktree.into(),
+                force,
+            },
+        )
+    }
+
+    /// Ask the server to rediscover worktrees from the filesystem.
+    pub fn refresh_worktrees(&self, directory: impl Into<String>, request_id: u64) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::RefreshWorktrees { request_id },
+        )
+    }
+
+    /// Move a session to another directory.
+    pub fn move_session(
+        &self,
+        directory: impl Into<String>,
+        session_id: impl Into<String>,
+        target: impl Into<String>,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::MoveSession {
+                session_id: session_id.into(),
+                directory: target.into(),
+            },
+        )
+    }
+
+    /// Reload sessions for the project root and every worktree directory,
+    /// merged into one `SessionsLoaded` snapshot.
+    pub fn list_sessions_across(
+        &self,
+        directory: impl Into<String>,
+        directories: Vec<String>,
+    ) -> bool {
+        self.send(
+            directory,
+            EngineCommandKind::ListSessionsAcross { directories },
         )
     }
 
