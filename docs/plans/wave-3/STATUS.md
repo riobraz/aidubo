@@ -1,6 +1,6 @@
 # Status — Wave 3 execution
 
-Status: in progress (implementation and `G3` done; PR and merge pending)
+Status: done
 
 Last updated: 2026-11-12
 
@@ -40,11 +40,11 @@ Last updated: 2026-11-12
   with `RUST_HARNESS_MOCK_SCRIPTED_PROVIDER=1`, and `--validate`.
 - 2026-11-12 — Spec closed (`status: done`, acceptance checked) and the spec
   table and graph updated; `G3` is `done` in `graph.json`.
+- 2026-11-12 — Merged to `main` as `c8d4edb` (PR #6). Wave 3 is closed.
 
 ## In progress / next
 
-- Commit the wave, open a PR, and squash-merge to `main` without waiting for
-  Actions (they are not running). Then close this plan and update the README.
+- None. Wave 3 is shipped.
 
 ## Blockers
 
