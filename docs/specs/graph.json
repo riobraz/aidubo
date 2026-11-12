@@ -395,7 +395,7 @@
         "M14-02"
       ],
       "e2e": "tests/M14-03.rs @ RUST_HARNESS_PTY_E2E",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M11-03",
@@ -476,7 +476,7 @@
         "M14-03"
       ],
       "e2e": "every gate touched by the wave",
-      "status": "blocked"
+      "status": "done"
     },
     {
       "id": "G3",

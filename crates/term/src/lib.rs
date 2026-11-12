@@ -179,6 +179,14 @@ impl Grid {
         &self.cells
     }
 
+    /// Scrollback rows plus the screen, oldest first.
+    pub fn row_from_history(&self, index: usize) -> Option<&Row> {
+        match index.checked_sub(self.scrollback.len()) {
+            Some(screen) => self.cells.get(screen),
+            None => self.scrollback.get(index),
+        }
+    }
+
     /// One screen row.
     pub fn row(&self, index: u16) -> Option<&Row> {
         self.cells.get(index as usize)
@@ -661,11 +669,14 @@ impl Grid {
         if top == 0 && self.scroll_bottom == self.rows - 1 && self.alt.is_none() {
             let removed = self.cells.remove(0);
             self.scrollback.push_back(removed);
-            while self.scrollback.len() > SCROLLBACK_LIMIT {
-                self.scrollback.pop_front();
-            }
-            self.cells
-                .insert(bottom, vec![Cell::default(); self.cols as usize]);
+            // Recycle the row the scrollback cap drops instead of allocating a
+            // fresh one; a full-screen burst scrolls once per line.
+            let recycled = if self.scrollback.len() > SCROLLBACK_LIMIT {
+                self.scrollback.pop_front()
+            } else {
+                None
+            };
+            self.cells.push(self.blank_row(recycled));
         } else {
             self.cells.remove(top);
             self.cells
@@ -673,6 +684,17 @@ impl Grid {
         }
         for flag in self.dirty.iter_mut() {
             *flag = true;
+        }
+    }
+
+    fn blank_row(&self, recycled: Option<Row>) -> Row {
+        match recycled {
+            Some(mut row) => {
+                row.resize(self.cols as usize, Cell::default());
+                row.fill(Cell::default());
+                row
+            }
+            None => vec![Cell::default(); self.cols as usize],
         }
     }
 

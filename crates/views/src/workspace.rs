@@ -1,5 +1,6 @@
 //! The M1 workspace: project-scoped sessions.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,14 +26,17 @@ use harness_core::{
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
-    AgentInfo, AuthStatus, CommandAttempt, CommandInfo, CreateScheduleRequest, FileDiff,
-    InboxDelivery, IntegrationMethod, McpStatus, ModelInfo, OAuthAttempt, PermissionRequest,
-    Project, ProjectId, ScheduleStatus, ScheduleWhen, Session, SkillInfo,
+    AgentInfo, AuthStatus, CommandAttempt, CommandInfo, CreatePtyRequest, CreateScheduleRequest,
+    FileDiff, InboxDelivery, IntegrationMethod, McpStatus, ModelInfo, OAuthAttempt,
+    PermissionRequest, Project, ProjectId, PtyProcess, PtyStatus, ScheduleStatus, ScheduleWhen,
+    Session, SkillInfo,
 };
 use harness_ui::{Theme, attachment_chip, status_dot};
 
 use crate::notify::NotifyChannels;
 use crate::project_switcher::ProjectSwitcher;
+use crate::terminal::{PtySession, Run, TerminalResize, indexed_rgb, row_runs};
+use crate::terminal_keys::{self, KeyMods};
 use crate::transfer::{
     ImportFile, StatsPreset, TransferState, compact_count, money, token_summary,
 };
@@ -166,6 +170,24 @@ pub type ProjectSink = Arc<dyn Fn(ProjectSnapshot) + Send + Sync>;
 /// Where the app persists the single live goal; the view never touches disk.
 pub type GoalSink = Arc<dyn Fn(Option<GoalRecord>) + Send + Sync>;
 
+/// Terminal geometry: the dock spans the main pane, between the fixed sidebar
+/// and the changes panel.
+const TERMINAL_SIDEBAR_WIDTH: f32 = 288.0;
+const TERMINAL_CHANGES_WIDTH: f32 = 340.0;
+const TERMINAL_CELL_WIDTH: f32 = 8.0;
+const TERMINAL_LINE_HEIGHT: f32 = 18.0;
+const TERMINAL_ROWS: u16 = 11;
+const TERMINAL_DOCK_HEIGHT: f32 = 236.0;
+
+fn terminal_size_for(window: &Window) -> (u16, u16) {
+    let width = window.viewport_size().width.as_f32()
+        - TERMINAL_SIDEBAR_WIDTH
+        - TERMINAL_CHANGES_WIDTH
+        - 24.0;
+    let cols = (width / TERMINAL_CELL_WIDTH).floor().clamp(20.0, 400.0) as u16;
+    (cols, TERMINAL_ROWS)
+}
+
 /// Root view. Owns the engine handle so the child is stopped when the view is
 /// dropped at app exit.
 pub struct WorkspaceView {
@@ -197,6 +219,21 @@ pub struct WorkspaceView {
     /// The auditor's last decision, shown while the loop is running.
     goal_note: Option<String>,
     goal_sink: Option<GoalSink>,
+    /// The attached terminal, if one was created. Hiding the dock keeps it.
+    terminal: Option<PtySession>,
+    terminal_open: bool,
+    terminal_focus: FocusHandle,
+    /// Set when the dock should take focus on the next frame.
+    terminal_focus_pending: bool,
+    terminal_status: Option<PtyStatus>,
+    terminal_exit_code: Option<u32>,
+    terminal_error: Option<String>,
+    terminal_size: (u16, u16),
+    terminal_resize: TerminalResize,
+    /// Incremented per request so a stale debounce task cannot send.
+    terminal_resize_generation: u64,
+    terminal_resize_task: Option<Task<()>>,
+    _terminal_bounds_subscription: Option<Subscription>,
     /// Startup notice about saved projects that could not be reopened.
     projects_notice: Option<String>,
     /// Last command error, shown until dismissed or superseded.
@@ -378,6 +415,8 @@ impl WorkspaceView {
         let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("worktree name"));
         let goal_objective =
             cx.new(|cx| InputState::new(window, cx).placeholder("What should the agent finish?"));
+        let terminal_focus = cx.focus_handle();
+        let terminal_size = terminal_size_for(window);
         let form_subscription =
             cx.subscribe_in(&form_input, window, |this, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -411,7 +450,7 @@ impl WorkspaceView {
             },
         );
 
-        Self {
+        let mut view = Self {
             status: EngineStatus::default(),
             sessions: SessionStore::default(),
             projects,
@@ -433,6 +472,18 @@ impl WorkspaceView {
             goal_error: None,
             goal_note: None,
             goal_sink: None,
+            terminal: None,
+            terminal_open: false,
+            terminal_focus,
+            terminal_focus_pending: false,
+            terminal_status: None,
+            terminal_exit_code: None,
+            terminal_error: None,
+            terminal_size,
+            terminal_resize: TerminalResize::default(),
+            terminal_resize_generation: 0,
+            terminal_resize_task: None,
+            _terminal_bounds_subscription: None,
             projects_notice: None,
             error: None,
             renaming: None,
@@ -498,7 +549,11 @@ impl WorkspaceView {
             _notify_status_task: status_task,
             _notify_flush_task: flush_task,
             _events_task: events_task,
-        }
+        };
+        view._terminal_bounds_subscription = Some(
+            cx.observe_window_bounds(window, |this, window, cx| this.fit_terminal(window, cx)),
+        );
+        view
     }
 
     /// Merge the projects remembered from the last run. The startup project is
@@ -1177,12 +1232,11 @@ impl WorkspaceView {
                 self.engine.load_permissions(self.directory(), session_id);
             }
             EngineEvent::Interrupted { .. } => {}
-            // There is no terminal surface yet; M14-02 consumes these.
-            EngineEvent::PtyCreated { .. }
-            | EngineEvent::PtysLoaded { .. }
-            | EngineEvent::PtyOutput { .. }
-            | EngineEvent::PtyClosed { .. }
-            | EngineEvent::PtyError { .. } => {}
+            EngineEvent::PtyCreated { pty } => self.on_pty_created(pty),
+            EngineEvent::PtysLoaded { result } => self.on_ptys_loaded(result),
+            EngineEvent::PtyOutput { id, bytes } => self.on_pty_output(&id, &bytes),
+            EngineEvent::PtyClosed { id } => self.on_pty_closed(&id),
+            EngineEvent::PtyError { id, message } => self.on_pty_error(&id, message),
             EngineEvent::CommandFailed { message } => {
                 self.permission_in_flight = None;
                 self.pending_worktree_remove = None;
@@ -1469,6 +1523,257 @@ impl WorkspaceView {
             return None;
         }
         Some(goal)
+    }
+
+    fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal.is_some() {
+            self.terminal_open = !self.terminal_open;
+            if self.terminal_open {
+                self.terminal_focus_pending = true;
+                self.fit_terminal(window, cx);
+                // The window may have been resized while the dock was hidden,
+                // when no request was sent.
+                self.schedule_terminal_resize(window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        self.create_terminal(window, cx);
+    }
+
+    fn create_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.status.is_ready() {
+            self.terminal_error = Some("The engine is not ready yet.".into());
+            self.terminal_open = true;
+            cx.notify();
+            return;
+        }
+        self.fit_terminal(window, cx);
+        let directory = self.directory();
+        let command = match std::env::var("SHELL") {
+            Ok(command) if !command.trim().is_empty() => command,
+            _ => "/bin/sh".to_string(),
+        };
+        self.terminal_error = None;
+        if !self.engine.create_pty(
+            directory.clone(),
+            CreatePtyRequest {
+                command,
+                args: Vec::new(),
+                cwd: directory,
+                title: "Terminal".into(),
+                env: BTreeMap::new(),
+            },
+        ) {
+            self.terminal_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn hide_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal_open = false;
+        cx.notify();
+    }
+
+    /// Ask the server to terminate the process; the dock stays until the
+    /// close event arrives so the exit status can be shown.
+    fn terminate_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.terminal else {
+            return;
+        };
+        let id = session.id.clone();
+        self.engine.delete_pty(self.directory(), id);
+        cx.notify();
+    }
+
+    fn dismiss_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal = None;
+        self.terminal_open = false;
+        self.terminal_status = None;
+        self.terminal_exit_code = None;
+        self.terminal_error = None;
+        self.terminal_resize = TerminalResize::default();
+        cx.notify();
+    }
+
+    fn copy_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.terminal else {
+            return;
+        };
+        let text = session.visible_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+        cx.notify();
+    }
+
+    fn paste_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.terminal else {
+            return;
+        };
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let bytes = terminal_keys::encode_paste(&text, session.grid.bracketed_paste());
+        let id = session.id.clone();
+        self.engine.write_pty(self.directory(), id, bytes);
+        cx.notify();
+    }
+
+    fn terminal_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let modifiers = KeyMods {
+            control: keystroke.modifiers.control,
+            alt: keystroke.modifiers.alt,
+            shift: keystroke.modifiers.shift,
+            platform: keystroke.modifiers.platform,
+        };
+        if modifiers.platform {
+            match keystroke.key.as_str() {
+                "c" => self.copy_terminal(cx),
+                "v" => self.paste_terminal(cx),
+                _ => {}
+            }
+            return;
+        }
+        let Some(bytes) =
+            terminal_keys::encode_key(modifiers, &keystroke.key, keystroke.key_char.as_deref())
+        else {
+            return;
+        };
+        let Some(session) = &self.terminal else {
+            return;
+        };
+        let id = session.id.clone();
+        self.engine.write_pty(self.directory(), id, bytes);
+    }
+
+    fn terminal_scrolled(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
+        let Some(session) = &mut self.terminal else {
+            return;
+        };
+        let delta = event.delta.pixel_delta(px(TERMINAL_LINE_HEIGHT)).y.as_f32();
+        let lines = (delta / TERMINAL_LINE_HEIGHT).round() as i32;
+        if lines > 0 {
+            session.scroll_up(lines as usize);
+        } else if lines < 0 {
+            session.scroll_down((-lines) as usize);
+        }
+        cx.notify();
+    }
+
+    fn fit_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let size = terminal_size_for(window);
+        if size == self.terminal_size {
+            return;
+        }
+        self.terminal_size = size;
+        if let Some(session) = &mut self.terminal {
+            session.resize(size.0, size.1);
+        }
+        if self.terminal_open && self.terminal.is_some() {
+            self.schedule_terminal_resize(window, cx);
+        }
+    }
+
+    fn schedule_terminal_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (cols, rows) = self.terminal_size;
+        self.terminal_resize.request(now_ms(), cols, rows);
+        self.terminal_resize_generation = self.terminal_resize_generation.wrapping_add(1);
+        let generation = self.terminal_resize_generation;
+        self.terminal_resize_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                let wait = this.update(cx, |this, _| this.terminal_resize.wait_ms(now_ms()));
+                let Ok(Some(wait)) = wait else {
+                    return;
+                };
+                if wait > 0 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(wait as u64))
+                        .await;
+                }
+                let applied = this.update(cx, |this, _| {
+                    if this.terminal_resize_generation != generation {
+                        return true;
+                    }
+                    let Some((cols, rows)) = this.terminal_resize.take_if_due(now_ms()) else {
+                        return false;
+                    };
+                    if let Some(session) = &this.terminal {
+                        let id = session.id.clone();
+                        this.engine.resize_pty(this.directory(), id, cols, rows);
+                    }
+                    true
+                });
+                if applied.unwrap_or(true) {
+                    return;
+                }
+            }
+        }));
+    }
+
+    fn on_pty_created(&mut self, pty: PtyProcess) {
+        if let Some(session) = &self.terminal {
+            if session.id == pty.id {
+                self.terminal_status = Some(pty.status);
+                self.terminal_exit_code = pty.exit_code;
+            }
+            return;
+        }
+        let (cols, rows) = self.terminal_size;
+        self.terminal = Some(PtySession::new(pty.id.clone(), cols, rows));
+        self.terminal_open = true;
+        self.terminal_focus_pending = true;
+        self.terminal_error = None;
+        self.terminal_status = Some(pty.status);
+        self.terminal_exit_code = pty.exit_code;
+        let directory = self.directory();
+        self.engine.connect_pty(directory.clone(), pty.id.clone());
+        // The server starts a PTY at its own default size.
+        self.engine.resize_pty(directory, pty.id, cols, rows);
+    }
+
+    fn on_ptys_loaded(&mut self, result: Result<Vec<PtyProcess>, String>) {
+        match result {
+            Ok(ptys) => {
+                let Some(session) = &self.terminal else {
+                    return;
+                };
+                if let Some(pty) = ptys.iter().find(|pty| pty.id == session.id) {
+                    self.terminal_status = Some(pty.status.clone());
+                    self.terminal_exit_code = pty.exit_code;
+                }
+            }
+            Err(message) => self.terminal_error = Some(message),
+        }
+    }
+
+    fn on_pty_output(&mut self, id: &str, bytes: &[u8]) {
+        if let Some(session) = &mut self.terminal
+            && session.id == id
+        {
+            session.feed(bytes);
+        }
+    }
+
+    fn on_pty_closed(&mut self, id: &str) {
+        let Some(session) = &self.terminal else {
+            return;
+        };
+        if session.id != id {
+            return;
+        }
+        self.terminal_status = Some(PtyStatus::Exited);
+        self.engine.list_ptys(self.directory());
+    }
+
+    fn on_pty_error(&mut self, id: &str, message: String) {
+        if let Some(session) = &self.terminal
+            && session.id != id
+        {
+            return;
+        }
+        self.terminal_error = Some(message);
     }
 
     fn open_worktree_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4914,7 +5219,148 @@ impl WorkspaceView {
         }
     }
 
-    fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_terminal(
+        &mut self,
+        window: &mut Window,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        if self.terminal_focus_pending {
+            self.terminal_focus_pending = false;
+            window.focus(&self.terminal_focus, cx);
+        }
+
+        let status = match &self.terminal_status {
+            Some(PtyStatus::Running) => "Running".to_string(),
+            Some(PtyStatus::Exited) => match self.terminal_exit_code {
+                Some(code) => format!("Exited ({code})"),
+                None => "Exited".to_string(),
+            },
+            Some(PtyStatus::Unknown(value)) if !value.is_empty() => value.clone(),
+            Some(PtyStatus::Unknown(_)) | None => "Starting…".to_string(),
+        };
+
+        let mut actions = div().flex().items_center().gap_1();
+        if self.terminal.is_some() {
+            actions = actions
+                .child(
+                    Button::new("terminal-copy")
+                        .small()
+                        .ghost()
+                        .label("Copy")
+                        .on_click(cx.listener(|this, _, _, cx| this.copy_terminal(cx))),
+                )
+                .child(
+                    Button::new("terminal-hide")
+                        .small()
+                        .ghost()
+                        .label("Hide")
+                        .on_click(cx.listener(|this, _, _, cx| this.hide_terminal(cx))),
+                );
+        }
+        if matches!(self.terminal_status, Some(PtyStatus::Running)) {
+            actions = actions.child(
+                Button::new("terminal-delete")
+                    .small()
+                    .danger()
+                    .label("Delete")
+                    .on_click(cx.listener(|this, _, _, cx| this.terminate_terminal(cx))),
+            );
+        } else if self.terminal.is_some() {
+            actions = actions.child(
+                Button::new("terminal-dismiss")
+                    .small()
+                    .ghost()
+                    .label("Dismiss")
+                    .on_click(cx.listener(|this, _, _, cx| this.dismiss_terminal(cx))),
+            );
+        }
+
+        let header = div()
+            .h(px(32.0))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().text_xs().child("Terminal"))
+            .child(div().text_xs().text_color(theme.muted).child(status))
+            .child(div().flex_1())
+            .child(actions);
+
+        let mut screen = div()
+            .id("terminal-screen")
+            .flex_1()
+            .min_h_0()
+            .px_2()
+            .py_1()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .font_family("monospace")
+            .text_sm();
+
+        let mut rendered = 0;
+        if let Some(session) = &self.terminal {
+            let cursor = session.cursor();
+            for (index, row) in session.rows().enumerate() {
+                rendered += 1;
+                let cursor_x = cursor.filter(|(_, y)| *y as usize == index).map(|(x, _)| x);
+                let mut line = div()
+                    .h(px(TERMINAL_LINE_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .whitespace_nowrap();
+                for run in row_runs(row, cursor_x) {
+                    line = line.child(render_terminal_run(&run, &theme));
+                }
+                screen = screen.child(line);
+            }
+            if let Some(error) = &self.terminal_error {
+                screen = screen.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .child(error.clone()),
+                );
+            }
+            while rendered < session.grid.rows() as usize {
+                rendered += 1;
+                screen = screen.child(div().h(px(TERMINAL_LINE_HEIGHT)));
+            }
+        } else {
+            let message = self
+                .terminal_error
+                .clone()
+                .unwrap_or_else(|| "No terminal yet.".to_string());
+            screen = screen.child(div().text_xs().text_color(theme.muted).child(message));
+        }
+
+        div()
+            .id("terminal-dock")
+            .w_full()
+            .h(px(TERMINAL_DOCK_HEIGHT))
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.bg)
+            .track_focus(&self.terminal_focus)
+            .on_key_down(cx.listener(|this, event, _, cx| this.terminal_key(event, cx)))
+            .on_scroll(cx.listener(|this, event, _, cx| this.terminal_scrolled(event, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.terminal_focus, cx);
+                    cx.notify();
+                }),
+            )
+            .child(header)
+            .child(screen)
+    }
+
+    fn render_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         let mut main = div()
             .flex_1()
@@ -4944,6 +5390,10 @@ impl WorkspaceView {
                 main = main.child(self.import_panel(file, theme, cx));
             }
             main = main.child(self.empty_pane(theme, cx));
+        }
+
+        if self.terminal_open {
+            main = main.child(self.render_terminal(window, theme, cx));
         }
 
         main
@@ -5113,6 +5563,13 @@ impl WorkspaceView {
                     .label("Goal")
                     .disabled(!self.status.is_ready())
                     .on_click(cx.listener(|this, _, window, cx| this.open_goal_form(window, cx))),
+            )
+            .child(
+                Button::new("toggle-terminal")
+                    .small()
+                    .ghost()
+                    .label("Terminal")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
             )
             .child(
                 Button::new("rename-session")
@@ -6350,8 +6807,56 @@ fn session_subtitle(session: &Session) -> SharedString {
     parts.join(" · ").into()
 }
 
+fn terminal_color(color: harness_term::Color, default: Hsla) -> Hsla {
+    match color {
+        harness_term::Color::Default => default,
+        harness_term::Color::Indexed(index) => {
+            let (r, g, b) = indexed_rgb(index);
+            rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into()
+        }
+        harness_term::Color::Rgb(r, g, b) => {
+            rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into()
+        }
+    }
+}
+
+fn render_terminal_run(run: &Run, theme: &Theme) -> impl IntoElement {
+    let mut fg = terminal_color(run.fg, theme.text);
+    let mut bg = match run.bg {
+        harness_term::Color::Default => None,
+        color => Some(terminal_color(color, theme.bg)),
+    };
+    if run.attrs.reverse {
+        let swapped_fg = bg.unwrap_or(theme.bg);
+        bg = Some(fg);
+        fg = swapped_fg;
+    }
+    if run.cursor {
+        fg = theme.bg;
+        bg = Some(theme.text);
+    }
+
+    let mut span = div()
+        .whitespace_nowrap()
+        .text_color(fg)
+        .child(run.text.clone());
+    if let Some(bg) = bg {
+        span = span.bg(bg);
+    }
+    if run.attrs.bold {
+        span = span.font_weight(FontWeight::BOLD);
+    }
+    if run.attrs.italic {
+        span = span.italic();
+    }
+    if run.attrs.underline {
+        span = span.underline();
+    }
+    span
+}
+
 impl Render for WorkspaceView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         div()
             .key_context("Workspace")
@@ -6383,7 +6888,7 @@ impl Render for WorkspaceView {
                     .flex()
                     .flex_row()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_main(cx))
+                    .child(self.render_main(window, cx))
                     .child(self.render_changes(cx)),
             )
     }

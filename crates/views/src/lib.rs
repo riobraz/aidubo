@@ -2,6 +2,8 @@
 
 mod notify;
 mod project_switcher;
+mod terminal;
+mod terminal_keys;
 mod transfer;
 mod workspace;
 

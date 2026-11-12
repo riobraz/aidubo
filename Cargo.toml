@@ -51,6 +51,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 harness-core = { path = "crates/core" }
 harness-engine = { path = "crates/engine" }
 harness-protocol = { path = "crates/protocol" }
+harness-term = { path = "crates/term" }
 harness-ui = { path = "crates/ui" }
 harness-views = { path = "crates/views" }
 

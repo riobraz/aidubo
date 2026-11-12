@@ -3313,6 +3313,7 @@ dependencies = [
  "futures-util",
  "harness-core",
  "harness-protocol",
+ "harness-term",
  "rand 0.9.5",
  "reqwest",
  "serde",
@@ -3352,6 +3353,7 @@ dependencies = [
  "harness-core",
  "harness-engine",
  "harness-protocol",
+ "harness-term",
  "harness-ui",
  "serde_json",
 ]

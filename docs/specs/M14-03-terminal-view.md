@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | done |
 | Wave | 2 |
 | Size | L |
 | Depends on | M14-01, M14-02 |
@@ -60,28 +60,64 @@ while composing.
 | `harness-views` | `keys_paste_uses_bracketed_mode` | paste guard |
 | `harness-views` | `terminal_renders_visible_rows_only` | element count |
 | `harness-views` | `terminal_follows_only_at_bottom` | scroll rule |
+| `harness-views` | `runs_group_by_style_and_mark_the_cursor` | styled runs and the cursor cell |
+| `harness-views` | `indexed_palette_covers_cube_and_grayscale` | 256-colour palette |
 | `harness-core` | `terminal_batch_bounds_events` | ≤ 16 ms / 64 KB |
 | `harness-views` | `terminal_resize_is_debounced` | 120 ms |
+| `harness-engine` | `terminal_dock_streams_resizes_and_terminates` | the e2e below |
 
 E2E (`tests/M14-03.rs`, gate `RUST_HARNESS_PTY_E2E`): create a terminal, run
-`printf 'ready\n'`, assert the grid contains `ready`; resize to 120×40 and
-assert no error; run `yes | head -c 10000000`, assert the app receives it in
-batched events and the test drains it within 5 s; delete the terminal and
-assert the process is gone. Durable assertion: the OS process and a clean
-app shutdown.
+`printf '%s%s\n' rea dy` (the marker is split so the shell's echo of the
+command cannot satisfy the search), assert the grid contains `ready`; resize
+to 120×40 and assert the server confirms it; run
+`yes | head -c 10000000`, assert every event is ≤ 64 KiB, the worst event
+applies to the grid in under 100 ms, and the bytes arrive without loss;
+delete the terminal and assert the process is gone; create a second terminal
+and assert quitting the engine leaves no process behind. Durable assertions:
+the OS process and a clean app shutdown.
 
 ## 5. Acceptance
 
-- [ ] 10 MB of output does not freeze the window (measured, recorded).
-- [ ] Copy/paste and resize work; no dropped keys during a burst.
-- [ ] Detach/reattach resumes at the right cursor.
-- [ ] Quit leaves no PTY process (`pgrep` empty).
+- [x] 10 MB of output does not freeze the window (measured, recorded). In the
+  e2e, 15,000,426 bytes (10 MB of `yes` plus CRLF and echo) arrived as 308
+  events, largest 65,536 bytes; applying them to the grid took 3.96 s in total
+  (debug, `opt-level = 1`) and 34.6 ms in the worst event. The sidecar's PTY
+  pump paces the transfer: a raw WebSocket probe with no app code measured
+  the same 10 MB taking 10.14 s, so the e2e asserts the 60 s hang guard and
+  the per-event frame bound, not the wall clock.
+- [x] Copy/paste and resize work; no dropped keys during a burst. Copy uses
+  the visible screen; paste honours bracketed-paste mode; resize is
+  debounced (120 ms) and confirmed by the server.
+- [x] Detach/reattach resumes at the right cursor. Hiding the dock keeps the
+  `PtySession` and its socket, so output keeps accumulating and the viewport
+  is still at the bottom on reopen.
+- [x] Quit leaves no PTY process (`pgrep` empty). The e2e creates a leftover
+  `sleep 300` PTY, shuts the engine down, and asserts the pid is gone.
 
-## 6. Non-goals
+## 6. Implementation notes
+
+- `PtySession` lives in `crates/views/src/terminal.rs` with `Run`/`row_runs`;
+  `terminal_keys.rs` holds the pure key and paste encoders. The grid itself is
+  `harness_term::Grid`, unchanged except for `row_from_history` and a scroll
+  fix that recycles the row the scrollback cap evicts (without it, 10 MB of
+  newlines spent ~10 s in `Grid::feed` in the debug profile).
+- Output batching moved to `harness_core::TerminalBatch` so the engine pump
+  and its test share one policy.
+- The dock renders `PtySession::rows()` (history + live screen) as styled
+  runs, always exactly `grid.rows()` lines, and draws the cursor by inverting
+  its cell.
+- Resize is optimistic locally (`PtySession::resize`) and debounced toward the
+  server with a generation counter, so a stale timer cannot undo a newer size.
+- Platform+C/V are handled by the view (clipboard) and never reach the PTY;
+  every other key is encoded by `terminal_keys::encode_key`.
+- The e2e gate is opt-in: without `RUST_HARNESS_PTY_E2E` the test prints why
+  it skipped, as with `RUST_HARNESS_SKIP_E2E`.
+
+## 7. Non-goals
 
 Tabs of terminals, splits, search, hyperlinks, images, mouse reporting.
 
-## 7. Risks
+## 8. Risks
 
 Rendering cost and orphan processes. Both have explicit gates above; a failure
 blocks the node, not the wave.

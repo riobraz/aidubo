@@ -61,8 +61,10 @@ shows git status, base, and branches, and renders diffs in a virtualized view.
 Scheduled prompts, OS notifications, MCP servers, provider connections, saved
 permission rules, and plugin status live in the right panel. Distribution adds
 Linux packaging, a redacted diagnostics report, session export/import/stats,
-and the signed update check described below. The PTY transport client is in
-place; the terminal UI is M14-03.
+and the signed update check described below. The terminal dock opens a shell in
+the project directory: it renders the live grid with scrollback, copies the
+visible screen, honours bracketed paste, debounces resize, shows the exit code,
+and hides without killing the PTY when collapsed.
 
 **Notifications.** When a turn finishes or fails, a permission is requested, or
 the agent asks a question while the window is not focused on that session, the
