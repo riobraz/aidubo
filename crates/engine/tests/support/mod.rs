@@ -8,6 +8,7 @@ pub mod mock;
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
@@ -134,6 +135,14 @@ pub fn start_engine(project: &TestProject) -> Started {
 }
 
 pub fn start_engine_with(config: EngineConfig) -> Started {
+    // OpenCode creates its global SQLite schema on startup. Two servers
+    // starting at once race on the same tables and one exits with "table
+    // `account_state` already exists", so starts inside one test binary are
+    // serialized until the first one is ready.
+    static START_LOCK: Mutex<()> = Mutex::new(());
+    let _start = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let directory = std::fs::canonicalize(&config.project_dir)
         .unwrap_or_else(|_| config.project_dir.clone())
         .to_string_lossy()
