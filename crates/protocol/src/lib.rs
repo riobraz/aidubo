@@ -72,6 +72,25 @@ pub struct TokenCache {
     pub write: f64,
 }
 
+impl TokenUsage {
+    /// Every counted token, rounded to whole tokens. Used by the goal budget,
+    /// where undercounting would let a loop overspend.
+    pub fn total(&self) -> u64 {
+        let parts = [
+            self.input,
+            self.output,
+            self.reasoning,
+            self.cache.read,
+            self.cache.write,
+        ];
+        let sum: f64 = parts
+            .into_iter()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .sum();
+        sum.round().min(u64::MAX as f64) as u64
+    }
+}
+
 /// A session as returned by `GET /api/session`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Session {
@@ -167,7 +186,7 @@ pub struct AgentInfo {
 ///
 /// The server returns a large catalog with provider metadata we do not render;
 /// only the identifying fields are modeled.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ModelInfo {
     #[serde(default)]
     pub id: String,
@@ -179,6 +198,19 @@ pub struct ModelInfo {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    /// The server returns one entry per variant; the lowest input price
+    /// decides which model is "cheapest" for the goal auditor.
+    #[serde(default)]
+    pub cost: Vec<ModelCost>,
+}
+
+/// One price entry in a model's `cost` array, in dollars per million tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct ModelCost {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
 }
 
 impl ModelInfo {
@@ -189,6 +221,16 @@ impl ModelInfo {
         } else {
             &self.model_id
         }
+    }
+
+    /// The lowest input price the server published. Models without price
+    /// information sort last.
+    pub fn input_cost(&self) -> f64 {
+        self.cost
+            .iter()
+            .map(|cost| cost.input)
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+            .fold(f64::MAX, f64::min)
     }
 
     /// The reference used by `POST /api/session/{id}/model`.

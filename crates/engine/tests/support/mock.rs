@@ -142,6 +142,10 @@ fn handle_connection(mut stream: TcpStream, script: Arc<Script>, cursor: Arc<Mut
     if std::env::var_os("RUST_HARNESS_DEBUG_EVENTS").is_some() {
         eprintln!("mock request: {path}");
     }
+    if std::env::var_os("RUST_HARNESS_DEBUG_MOCK").is_some() {
+        let flat = request.replace("\r\n", " | ");
+        eprintln!("mock body: {}", flat.chars().take(4000).collect::<String>());
+    }
 
     if path.ends_with("/models") {
         let body =
@@ -156,7 +160,16 @@ fn handle_connection(mut stream: TcpStream, script: Arc<Script>, cursor: Arc<Mut
         return;
     }
 
-    let turn = {
+    // OpenCode names a session with an extra completion before the first
+    // turn. It must not consume a scripted turn, or every scripted test would
+    // desynchronize by one turn per session.
+    let title_request = request.contains("You name conversations");
+    let turn = if title_request {
+        Turn {
+            chunks: vec!["Scripted session".into()],
+            ..Turn::default()
+        }
+    } else {
         let mut index = cursor.lock().expect("mock cursor");
         let turn = script
             .turns

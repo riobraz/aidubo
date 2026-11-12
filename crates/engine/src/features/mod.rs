@@ -6,6 +6,7 @@ pub(crate) mod context;
 pub(crate) mod diff;
 pub(crate) mod files;
 pub(crate) mod form;
+pub(crate) mod goal;
 pub(crate) mod inbox;
 pub(crate) mod mcp;
 pub(crate) mod permissions;

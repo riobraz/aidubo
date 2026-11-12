@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
+use harness_core::GoalRecord;
 use harness_engine::{Engine, EngineConfig};
 use harness_views::{
     CancelOverlays, FocusComposer, NewSession, NotifyChannels, ToggleProjectSwitcher, ToggleTheme,
     WorkspaceView,
 };
-use rust_harness::{notify, persistence};
+use rust_harness::{goal_store, notify, persistence};
 
 fn main() {
     if std::env::args().any(|arg| arg == "--diagnostics") {
@@ -35,6 +36,10 @@ fn main() {
     let saved_projects = restored.projects;
     let saved_worktrees = restored.worktrees;
     let saved_notice = restored.notice;
+    let saved_goal = goal_store::restore();
+    let goal_auditor_model = std::env::var("RUST_HARNESS_GOAL_AUDITOR_MODEL")
+        .ok()
+        .and_then(|raw| goal_store::parse_auditor_model(&raw));
 
     let (projects_sender, projects_receiver) = async_channel::unbounded();
     if let Err(error) = std::thread::Builder::new()
@@ -48,6 +53,20 @@ fn main() {
         })
     {
         tracing::warn!(%error, "could not start the project list thread");
+    }
+
+    let (goal_sender, goal_receiver) = async_channel::unbounded::<Option<GoalRecord>>();
+    if let Err(error) = std::thread::Builder::new()
+        .name("goal-state".into())
+        .spawn(move || {
+            while let Ok(record) = goal_receiver.recv_blocking() {
+                if let Err(error) = goal_store::save(record.as_ref()) {
+                    tracing::warn!(%error, "could not persist the goal state");
+                }
+            }
+        })
+    {
+        tracing::warn!(%error, "could not start the goal state thread");
     }
 
     let notify_settings = notify::load_settings();
@@ -70,7 +89,11 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
 
-        let engine = Engine::spawn(EngineConfig::new(project_dir.clone()));
+        let mut engine_config = EngineConfig::new(project_dir.clone());
+        if let Some(model) = goal_auditor_model.clone() {
+            engine_config = engine_config.with_goal_auditor_model(model);
+        }
+        let engine = Engine::spawn(engine_config);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size(px(1120.), px(720.)), cx)),
             ..TitleBar::window_options()
@@ -107,6 +130,12 @@ fn main() {
                 .persist_projects_with(Arc::new(move |snapshot| {
                     if projects_sender.try_send(snapshot).is_err() {
                         tracing::warn!("could not queue the project list for saving");
+                    }
+                }))
+                .restore_saved_goal(saved_goal)
+                .persist_goal_with(Arc::new(move |record| {
+                    if goal_sender.try_send(record).is_err() {
+                        tracing::warn!("could not queue the goal state for saving");
                     }
                 }))
             })
