@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | done |
 | Wave | 1 |
 | Size | M |
 | Depends on | T0 |
@@ -92,12 +92,41 @@ Durable assertion: the OS process and the server list.
 
 ## 7. Acceptance
 
-- [ ] The spike document answers all six questions with evidence.
-- [ ] Output arrives and is batched.
-- [ ] Delete terminates the process, not only the connection.
-- [ ] The transport decision is recorded before the view depends on it.
+- [x] The spike document answers all six questions with evidence.
+- [x] Output arrives and is batched.
+- [x] Delete terminates the process, not only the connection.
+- [x] The transport decision is recorded before the view depends on it.
 
 ## 8. Risks
 
 WebSocket support would add a dependency and an auth path. That is exactly why
 the spike runs first, alone, with no UI.
+
+## 9. Implementation notes (2026-11-11)
+
+- The live contract and raw hex evidence are in
+  [`docs/spikes/pty-transport.md`](../spikes/pty-transport.md). The transport
+  decision is [ADR 0003](../adr/0003-pty-websocket-transport.md); 0002 was
+  already taken by the terminal crate, so the spec's numbering note is
+  superseded.
+- `tokio-tungstenite 0.30` is used with TLS features off (loopback only) and
+  tokio's `net` feature. The ticket is a query parameter and is deliberately
+  excluded from every error message and log line.
+- Input is sent as **binary** frames with raw bytes, because the server writes
+  any client frame to the PTY. Output is server text frames; NUL-prefixed
+  binary frames are cursor updates and are not rendered.
+- `OutputBatch` flushes at 64 KiB immediately or after 16 ms; it lives in
+  `harness-engine` and is covered by
+  `pty_output_is_batched_by_time_or_size`.
+- Deviations from the event sketch in section 5:
+  - `PtysLoaded` was added because `ListPtys` needs a result event.
+  - `PtyCreated` is also emitted after a successful resize with the refreshed
+    server snapshot; consumers upsert by id.
+  - `DeletePty` closes the reader before the HTTP delete and emits one
+    `PtyClosed` after the server answers 204, so the close has a single source.
+  - `PtyExited` is not emitted yet: the SSE `pty.exited` payload was not
+    observed, and guessing its shape would violate the no-invention rule. The
+    M14-02 view can add it once the frame is captured.
+- The e2e uses `sleep 30` instead of the spec's `sleep 5` and asserts the pid
+  is alive immediately before DELETE, so "gone" afterwards proves termination
+  rather than an earlier natural exit.

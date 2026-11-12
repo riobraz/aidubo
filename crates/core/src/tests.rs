@@ -16,6 +16,8 @@ fn session(id: &str, updated: i64) -> Session {
             updated,
         },
         location: None,
+        tokens: None,
+        cost: None,
     }
 }
 
@@ -485,6 +487,7 @@ fn streaming_deltas_accumulate_and_final_text_replaces() {
 
     assert!(store.apply_stream(StreamEvent::ExecutionFinished {
         session_id: "ses_1".into(),
+        event_id: "evt_1".into(),
         outcome: ExecutionOutcome::Succeeded,
     }));
     assert!(!store.is_busy());
@@ -500,6 +503,7 @@ fn failed_turns_surface_their_message() {
     });
     store.apply_stream(StreamEvent::ExecutionFinished {
         session_id: "ses_1".into(),
+        event_id: "evt_2".into(),
         outcome: ExecutionOutcome::Failed {
             message: "No credits".into(),
         },

@@ -283,6 +283,7 @@ impl PromptDraft {
         }
         Some(DraftSend::Prompt(PromptRequest {
             text: self.text.clone(),
+            delivery: None,
             files: self
                 .files
                 .iter()

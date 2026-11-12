@@ -1,27 +1,30 @@
 //! The sidecar supervisor: launch, wait for readiness, run commands, stop.
 
+use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
 use futures_util::StreamExt as _;
 use harness_protocol::{
-    AcceptedPrompt, CatalogKind, ModelRef, PermissionRequest, Session, SessionList, SessionMessage,
-    StreamEvent,
+    AcceptedPrompt, AttemptStatus, AuthStatus, CatalogKind, ModelRef, PermissionRequest, ProjectId,
+    Session, SessionList, SessionMessage, StreamEvent,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 
 use crate::api::SessionApi;
 use crate::events;
-use crate::{CatalogData, EngineCommand, EngineConfig, locate};
+use crate::features::pty::{PtyLinks, pump_pty};
+use crate::{CatalogData, EngineCommand, EngineCommandKind, EngineConfig, locate};
 
 /// Lifecycle events and command results emitted by the supervisor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
     /// The child has been spawned and is being probed.
     Starting { port: u16 },
@@ -35,12 +38,148 @@ pub enum EngineEvent {
     Log(String),
     /// A full snapshot of the project's sessions.
     SessionsLoaded { sessions: Vec<Session> },
+    /// The server's project registry.
+    ProjectsLoaded {
+        result: Result<Vec<harness_protocol::Project>, String>,
+    },
+    /// The active project changed; its sessions follow in `SessionsLoaded`.
+    ProjectSelected {
+        id: harness_protocol::ProjectId,
+        canonical: String,
+    },
     /// A new session was created on the server.
     SessionCreated { session: Session },
     /// A session title was changed on the server.
     SessionRenamed { id: String, title: String },
     /// A session was deleted on the server.
     SessionDeleted { id: String },
+    /// The session's pending forms.
+    FormsLoaded {
+        session_id: String,
+        forms: Vec<harness_protocol::FormInfo>,
+    },
+    /// Schedules for a session.
+    SchedulesLoaded {
+        request_id: u64,
+        session_id: String,
+        result: Result<Vec<harness_protocol::ScheduleInfo>, String>,
+    },
+    /// A schedule was created on the server.
+    ScheduleCreated {
+        schedule: harness_protocol::ScheduleInfo,
+    },
+    /// A schedule was paused, resumed, or refreshed.
+    ScheduleChanged {
+        schedule: harness_protocol::ScheduleInfo,
+    },
+    /// A schedule was deleted on the server.
+    ScheduleDeleted { id: String },
+    /// Providers.
+    ProvidersLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::ProviderInfo>, String>,
+    },
+    /// Integrations.
+    IntegrationsLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::IntegrationInfo>, String>,
+    },
+    /// An auth attempt started; the user must act when `url` or `command` is set.
+    AuthAttemptStarted {
+        integration_id: String,
+        kind: String,
+        method: String,
+        attempt_id: String,
+        url: Option<String>,
+        command: Option<String>,
+        instructions: String,
+    },
+    /// An attempt's server-reported status changed.
+    AuthAttemptUpdated {
+        integration_id: String,
+        attempt_id: String,
+        status: harness_protocol::AuthStatus,
+    },
+    /// An attempt failed, expired, timed out, or could not start.
+    AuthAttemptFailed {
+        integration_id: String,
+        message: String,
+    },
+    /// The user cancelled an attempt.
+    AuthAttemptCancelled { integration_id: String },
+    /// The server stored a credential for the integration.
+    ProviderConnected { integration_id: String },
+    /// Saved permission rules.
+    SavedPermissionsLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::SavedPermission>, String>,
+    },
+    /// A saved rule was revoked.
+    SavedPermissionDeleted {
+        id: String,
+        result: Result<(), String>,
+    },
+    /// MCP servers.
+    McpLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::McpServer>, String>,
+    },
+    /// An MCP mutation finished; the UI reloads the list.
+    McpChanged { name: String },
+    /// An MCP mutation failed; the server snapshot is unchanged.
+    McpError { name: String, message: String },
+    /// Installed plugins.
+    PluginsLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::PluginInfo>, String>,
+    },
+    /// A plugin update finished.
+    PluginUpdated {
+        id: String,
+        result: Result<(), String>,
+    },
+    /// A plugin check finished.
+    PluginsChecked {
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    /// Provider budget limits.
+    UsageLimitsLoaded {
+        request_id: u64,
+        result: Result<Option<harness_protocol::UsageLimits>, String>,
+    },
+    /// The server accepted a compaction request.
+    CompactionRequested { session_id: String },
+    /// The messages the model would see.
+    ContextLoaded {
+        session_id: String,
+        messages: Vec<harness_protocol::SessionMessage>,
+    },
+    /// A revert was staged and is waiting for commit.
+    RevertStaged {
+        session_id: String,
+        revert: harness_protocol::SessionRevert,
+    },
+    /// A staged revert was committed.
+    RevertCommitted {
+        session_id: String,
+        message_id: String,
+    },
+    /// The staged revert was cleared.
+    RevertCleared { session_id: String },
+    /// A form was created (tests and plugins).
+    FormCreated { form: harness_protocol::FormInfo },
+    /// A form was answered or dismissed.
+    FormSettled { form_id: String },
+    /// A form operation failed.
+    FormError { message: String },
+    /// The session's inbox snapshot.
+    InboxLoaded {
+        session_id: String,
+        items: Vec<harness_protocol::InboxInfo>,
+    },
+    /// The server forked a session.
+    SessionForked { session: Session },
     /// A session's message history snapshot.
     TranscriptLoaded {
         session_id: String,
@@ -53,6 +192,31 @@ pub enum EngineEvent {
     },
     /// A slash command was accepted by the server.
     CommandAccepted { session_id: String },
+    /// The project's working-tree status.
+    VcsStatusLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::VcsFileStatus>, String>,
+    },
+    /// The ref the working tree is compared against.
+    VcsBaseLoaded {
+        request_id: u64,
+        result: Result<Option<harness_protocol::VcsBase>, String>,
+    },
+    /// A repository was initialized.
+    RepoInitialized {
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    /// A diff snapshot for the project.
+    VcsDiffLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::FileDiff>, String>,
+    },
+    /// A diff snapshot for one session.
+    SessionDiffLoaded {
+        request_id: u64,
+        result: Result<Vec<harness_protocol::FileDiff>, String>,
+    },
     /// The server accepted a model change.
     SessionModelSet { session_id: String, model: ModelRef },
     /// The server accepted an agent change.
@@ -89,6 +253,40 @@ pub enum EngineEvent {
         session_id: String,
         request_id: String,
     },
+    /// A PTY snapshot was created or refreshed.
+    PtyCreated { pty: harness_protocol::PtyProcess },
+    /// The project's PTY list.
+    PtysLoaded {
+        result: Result<Vec<harness_protocol::PtyProcess>, String>,
+    },
+    /// Coalesced output from a PTY connection.
+    PtyOutput { id: String, bytes: Vec<u8> },
+    /// A PTY connection closed or its process was removed.
+    PtyClosed { id: String },
+    /// A PTY operation failed; the message is safe to display.
+    PtyError { id: String, message: String },
+    /// A session export was written to `path`.
+    SessionExported {
+        session_id: String,
+        path: PathBuf,
+        bytes: u64,
+    },
+    /// A session export failed; the message is safe to display.
+    SessionExportError { message: String },
+    /// An import file was read and parsed for the preview.
+    ImportPreviewed {
+        path: PathBuf,
+        transfer: harness_protocol::SessionTransfer,
+    },
+    /// A session was imported into the project.
+    SessionImported { session: Session },
+    /// An import failed; the message is safe to display.
+    SessionImportError { message: String },
+    /// Usage statistics for a range.
+    StatsLoaded {
+        request_id: u64,
+        result: Result<harness_protocol::SessionStats, String>,
+    },
     /// A command could not be completed; the message is safe to display.
     CommandFailed { message: String },
 }
@@ -118,6 +316,12 @@ async fn run_inner(
         ));
     }
 
+    // The HTTP `directory` is canonicalized by `SessionApi`; the child's cwd
+    // must match it, or project-scoped endpoints (VCS, worktrees) answer for a
+    // different path on systems where `/var` is a symlink to `/private/var`.
+    let project_dir =
+        std::fs::canonicalize(&config.project_dir).unwrap_or_else(|_| config.project_dir.clone());
+
     let binary = locate::locate_binary(config.binary.as_deref()).map_err(|err| err.to_string())?;
     tracing::debug!(binary = %binary.display(), "located the OpenCode binary");
     let version = read_version(&binary).await;
@@ -139,7 +343,7 @@ async fn run_inner(
         // v2.2 reads OPENCODE_PASSWORD; older builds read
         // OPENCODE_SERVER_PASSWORD. Set both so one binary works either way.
         .env("OPENCODE_PASSWORD", &password)
-        .current_dir(&config.project_dir)
+        .current_dir(&project_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -219,23 +423,46 @@ async fn run_inner(
         .await
         .map_err(|_| "the UI stopped listening".to_string())?;
 
-    let api = match SessionApi::new(port, password, &config.project_dir) {
+    let mut api = match SessionApi::new(port, password) {
         Ok(api) => api,
         Err(message) => {
             stop(&mut child).await;
             return Err(message);
         }
     };
+    let startup_directory = std::fs::canonicalize(&config.project_dir)
+        .unwrap_or_else(|_| config.project_dir.clone())
+        .to_string_lossy()
+        .into_owned();
 
     // Follow server events for the lifetime of the sidecar. The task is owned
     // by this runtime, so it is cancelled when the supervisor returns.
     tokio::spawn(pump_events(api.clone(), events.clone()));
 
     // Populate the sidebar as soon as the engine is usable.
-    match run_command(&api, EngineCommand::ListSessions, &mut shutdown).await {
+    let mut plugin_check_at: Option<std::time::Instant> = None;
+    let mut auth_pollers = AuthPollers::default();
+    let mut pty_links = PtyLinks::default();
+    match run_command(
+        &mut api,
+        EngineCommand::new(startup_directory, EngineCommandKind::ListSessions),
+        &mut shutdown,
+        &mut plugin_check_at,
+        events,
+        &mut auth_pollers,
+        &mut pty_links,
+    )
+    .await
+    {
         CommandResult::Event(event) => {
             let _ = events.send(*event).await;
         }
+        CommandResult::Events(batch) => {
+            for event in batch.into_vec() {
+                let _ = events.send(event).await;
+            }
+        }
+        CommandResult::None => {}
         CommandResult::Shutdown => {
             stop(&mut child).await;
             let _ = events.send(EngineEvent::Stopped).await;
@@ -261,10 +488,26 @@ async fn run_inner(
                     return Ok(());
                 };
 
-                match run_command(&api, command, &mut shutdown).await {
+                match run_command(
+                    &mut api,
+                    command,
+                    &mut shutdown,
+                    &mut plugin_check_at,
+                    events,
+                    &mut auth_pollers,
+                    &mut pty_links,
+                )
+                .await
+                {
                     CommandResult::Event(event) => {
                         let _ = events.send(*event).await;
                     }
+                    CommandResult::Events(batch) => {
+                        for event in batch.into_vec() {
+                            let _ = events.send(event).await;
+                        }
+                    }
+                    CommandResult::None => {}
                     CommandResult::Shutdown => {
                         stop(&mut child).await;
                         let _ = events.send(EngineEvent::Stopped).await;
@@ -279,6 +522,10 @@ async fn run_inner(
 enum CommandResult {
     /// Boxed to keep the transient result small next to `Shutdown`.
     Event(Box<EngineEvent>),
+    /// A mutation plus the authoritative list reload that follows it.
+    Events(Box<[EngineEvent]>),
+    /// The command succeeded without a UI-visible event.
+    None,
     Shutdown,
 }
 
@@ -286,15 +533,280 @@ fn event(event: EngineEvent) -> CommandResult {
     CommandResult::Event(Box::new(event))
 }
 
-async fn run_command(
+fn events(events: Vec<EngineEvent>) -> CommandResult {
+    CommandResult::Events(events.into_boxed_slice())
+}
+
+const AUTH_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const AUTH_POLL_LIMIT: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollStep {
+    Wait,
+    Finished,
+    TimedOut,
+}
+
+fn poll_step(elapsed: Duration, status: &AuthStatus) -> PollStep {
+    match status {
+        AuthStatus::Pending | AuthStatus::Unknown(_) => {
+            if elapsed >= AUTH_POLL_LIMIT {
+                PollStep::TimedOut
+            } else {
+                PollStep::Wait
+            }
+        }
+        AuthStatus::Complete | AuthStatus::Failed | AuthStatus::Expired => PollStep::Finished,
+    }
+}
+
+fn attempt_message(status: &AttemptStatus) -> String {
+    status
+        .message
+        .clone()
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| match status.status {
+            AuthStatus::Expired => "The connection attempt expired. Start it again.".into(),
+            _ => "The connection attempt failed. Start it again.".into(),
+        })
+}
+
+fn auth_status_events(
+    integration_id: String,
+    attempt_id: String,
+    status: AttemptStatus,
+) -> CommandResult {
+    let mut batch = vec![EngineEvent::AuthAttemptUpdated {
+        integration_id: integration_id.clone(),
+        attempt_id,
+        status: status.status.clone(),
+    }];
+    match status.status {
+        AuthStatus::Complete => batch.push(EngineEvent::ProviderConnected { integration_id }),
+        AuthStatus::Failed | AuthStatus::Expired => batch.push(EngineEvent::AuthAttemptFailed {
+            integration_id,
+            message: attempt_message(&status),
+        }),
+        AuthStatus::Pending | AuthStatus::Unknown(_) => {}
+    }
+    events(batch)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttemptKind {
+    OAuth,
+    Command,
+}
+
+/// Attempt handles kept only so cancel can abort the poller immediately.
+#[derive(Default)]
+struct AuthPollers {
+    tasks: HashMap<String, JoinHandle<()>>,
+}
+
+impl AuthPollers {
+    fn track(&mut self, attempt_id: String, handle: JoinHandle<()>) {
+        if let Some(previous) = self.tasks.insert(attempt_id, handle) {
+            previous.abort();
+        }
+    }
+
+    fn stop(&mut self, attempt_id: &str) {
+        if let Some(handle) = self.tasks.remove(attempt_id) {
+            handle.abort();
+        }
+    }
+}
+
+fn spawn_attempt_poller(
+    pollers: &mut AuthPollers,
+    api: SessionApi,
+    directory: String,
+    event_tx: Sender<EngineEvent>,
+    kind: AttemptKind,
+    integration_id: String,
+    attempt_id: String,
+) {
+    let tracked = attempt_id.clone();
+    let handle = tokio::spawn(async move {
+        let started = Instant::now();
+        loop {
+            sleep(AUTH_POLL_INTERVAL).await;
+            let status = match kind {
+                AttemptKind::OAuth => {
+                    api.oauth_status(&directory, &integration_id, &attempt_id)
+                        .await
+                }
+                AttemptKind::Command => {
+                    api.command_status(&directory, &integration_id, &attempt_id)
+                        .await
+                }
+            };
+            let status = match status {
+                Ok(status) => status,
+                Err(message) => {
+                    let _ = event_tx
+                        .send(EngineEvent::AuthAttemptFailed {
+                            integration_id,
+                            message,
+                        })
+                        .await;
+                    return;
+                }
+            };
+            match poll_step(started.elapsed(), &status.status) {
+                PollStep::Wait => continue,
+                PollStep::TimedOut => {
+                    let _ = event_tx
+                        .send(EngineEvent::AuthAttemptFailed {
+                            integration_id,
+                            message: "The connection attempt timed out. Start it again.".into(),
+                        })
+                        .await;
+                    return;
+                }
+                PollStep::Finished => {
+                    let CommandResult::Events(batch) =
+                        auth_status_events(integration_id, attempt_id, status)
+                    else {
+                        return;
+                    };
+                    for event in batch.into_vec() {
+                        if event_tx.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    });
+    pollers.track(tracked, handle);
+}
+
+/// Pause or resume, then reload the list so `nextDueAt` is server-provided.
+async fn schedule_mutation(
     api: &SessionApi,
+    shutdown: &mut oneshot::Receiver<()>,
+    request_id: u64,
+    session_id: String,
+    schedule_id: String,
+    action: &str,
+) -> CommandResult {
+    tokio::select! {
+        _ = &mut *shutdown => CommandResult::Shutdown,
+        result = async {
+            let schedule = api.schedule_action(&schedule_id, action).await?;
+            let schedules = api.schedules(&session_id).await;
+            Ok::<_, String>((schedule, schedules))
+        } => match result {
+            Ok((schedule, schedules)) => events(vec![
+                EngineEvent::ScheduleChanged { schedule },
+                EngineEvent::SchedulesLoaded { request_id, session_id, result: schedules },
+            ]),
+            Err(message) => event(EngineEvent::CommandFailed {
+                message: format!("Could not {action} the schedule: {message}"),
+            }),
+        },
+    }
+}
+
+/// Resolve a project selection to its canonical directory.
+///
+/// A locally added project uses its canonical path as the id; a server project
+/// uses the opaque id from `GET /api/project`. A path that is not already
+/// canonical is rejected instead of being silently rewritten, so every later
+/// request uses the same identity the server stores.
+async fn resolve_project(api: &SessionApi, id: &ProjectId) -> Result<String, String> {
+    let path = Path::new(id.as_str());
+    if path.is_dir() {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|err| format!("Could not resolve {}: {err}", id))?;
+        let canonical = canonical.to_string_lossy().into_owned();
+        if canonical != id.as_str() {
+            return Err(format!(
+                "Project paths must be canonical. Use {canonical} instead of {}.",
+                id
+            ));
+        }
+        return Ok(canonical);
+    }
+
+    let projects = api.projects().await?;
+    projects
+        .into_iter()
+        .find(|project| project.id == *id)
+        .map(|project| project.canonical)
+        .ok_or_else(|| "That project is no longer available. Reopen its folder.".to_string())
+}
+
+/// Canonicalize a command's project directory.
+///
+/// OpenCode stores and filters location paths in canonical form (`/tmp` is
+/// `/private/tmp` on macOS). Rejecting a non-canonical path here keeps the view
+/// from silently addressing a different project than the one it displayed.
+fn canonical_project_directory(directory: &str) -> Result<String, String> {
+    let path = Path::new(directory);
+    if !path.is_absolute() {
+        return Err("Project paths must be absolute.".into());
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|_| {
+        format!("Project folder is no longer available: {directory}. Reopen it from the sidebar.")
+    })?;
+    let canonical = canonical.to_string_lossy().into_owned();
+    if canonical != directory {
+        return Err(format!(
+            "Project paths must be canonical. Use {canonical} instead of {directory}."
+        ));
+    }
+    Ok(canonical)
+}
+
+async fn run_command(
+    api: &mut SessionApi,
     command: EngineCommand,
     shutdown: &mut oneshot::Receiver<()>,
+    plugin_check_at: &mut Option<std::time::Instant>,
+    event_tx: &Sender<EngineEvent>,
+    pollers: &mut AuthPollers,
+    pty_links: &mut PtyLinks,
 ) -> CommandResult {
-    match command {
-        EngineCommand::ListSessions => tokio::select! {
+    let EngineCommand { directory, kind } = command;
+    let directory = match canonical_project_directory(&directory) {
+        Ok(directory) => directory,
+        Err(message) => return event(EngineEvent::CommandFailed { message }),
+    };
+    match kind {
+        EngineCommandKind::ListProjects => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
-            result = api.list() => event(match result {
+            result = api.projects() => event(EngineEvent::ProjectsLoaded { result }),
+        },
+        EngineCommandKind::SelectProject { id } => match resolve_project(api, &id).await {
+            Ok(canonical) => {
+                tokio::select! {
+                    _ = &mut *shutdown => CommandResult::Shutdown,
+                    result = api.list(&canonical) => match result {
+                        Ok(sessions) => {
+                            tracing::debug!(project = %canonical, count = sessions.len(), "switched project");
+                            events(vec![
+                                EngineEvent::ProjectSelected { id, canonical },
+                                EngineEvent::SessionsLoaded { sessions },
+                            ])
+                        }
+                        Err(message) => events(vec![
+                            EngineEvent::ProjectSelected { id, canonical },
+                            EngineEvent::CommandFailed {
+                                message: format!("Could not load sessions: {message}"),
+                            },
+                        ]),
+                    },
+                }
+            }
+            Err(message) => event(EngineEvent::CommandFailed { message }),
+        },
+        EngineCommandKind::ListSessions => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.list(&directory) => event(match result {
                 Ok(sessions) => {
                     tracing::debug!(count = sessions.len(), "loaded project sessions");
                     EngineEvent::SessionsLoaded { sessions }
@@ -304,9 +816,9 @@ async fn run_command(
                 },
             }),
         },
-        EngineCommand::CreateSession => tokio::select! {
+        EngineCommandKind::CreateSession => tokio::select! {
             _ = &mut *shutdown => CommandResult::Shutdown,
-            result = api.create() => event(match result {
+            result = api.create(&directory) => event(match result {
                 Ok(session) => {
                     tracing::debug!(session = %session.id, "created session");
                     EngineEvent::SessionCreated { session }
@@ -316,7 +828,7 @@ async fn run_command(
                 },
             }),
         },
-        EngineCommand::RenameSession { id, title } => {
+        EngineCommandKind::RenameSession { id, title } => {
             let title = title.trim().to_string();
             if title.is_empty() {
                 return event(EngineEvent::CommandFailed {
@@ -338,7 +850,493 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::DeleteSession { id } => {
+        EngineCommandKind::LoadSchedules {
+            request_id,
+            session_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.schedules(&session_id) => {
+                event(EngineEvent::SchedulesLoaded { request_id, session_id, result })
+            }
+        },
+        EngineCommandKind::CreateSchedule {
+            request_id,
+            request,
+        } => {
+            let session_id = request.session_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = async {
+                    let schedule = api.create_schedule(*request).await?;
+                    let schedules = api.schedules(&session_id).await;
+                    Ok::<_, String>((schedule, schedules))
+                } => match result {
+                    Ok((schedule, schedules)) => events(vec![
+                        EngineEvent::ScheduleCreated { schedule },
+                        EngineEvent::SchedulesLoaded { request_id, session_id, result: schedules },
+                    ]),
+                    Err(message) => event(EngineEvent::CommandFailed {
+                        message: format!("Could not create the schedule: {message}"),
+                    }),
+                },
+            }
+        }
+        EngineCommandKind::PauseSchedule {
+            request_id,
+            session_id,
+            schedule_id,
+        } => schedule_mutation(api, shutdown, request_id, session_id, schedule_id, "pause").await,
+        EngineCommandKind::ResumeSchedule {
+            request_id,
+            session_id,
+            schedule_id,
+        } => schedule_mutation(api, shutdown, request_id, session_id, schedule_id, "resume").await,
+        EngineCommandKind::DeleteSchedule {
+            request_id,
+            session_id,
+            schedule_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                api.delete_schedule(&schedule_id).await?;
+                api.schedules(&session_id).await
+            } => match result {
+                Ok(schedules) => events(vec![
+                    EngineEvent::ScheduleDeleted { id: schedule_id },
+                    EngineEvent::SchedulesLoaded { request_id, session_id, result: Ok(schedules) },
+                ]),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not delete the schedule: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::LoadProviders { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.providers(&directory) => event(EngineEvent::ProvidersLoaded { request_id, result }),
+        },
+        EngineCommandKind::LoadIntegrations { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.integrations(&directory) => event(EngineEvent::IntegrationsLoaded { request_id, result }),
+        },
+        EngineCommandKind::StartOAuth {
+            integration_id,
+            method_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_method = method_id.clone();
+            let poll_api = api.clone();
+            let poll_events = event_tx.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.start_oauth(&directory, &call_integration, &call_method) => match result {
+                    Ok(attempt) if attempt.attempt_id.is_empty() => event(EngineEvent::AuthAttemptFailed {
+                        integration_id,
+                        message: "OpenCode returned an attempt without an id.".into(),
+                    }),
+                    Ok(attempt) => {
+                        spawn_attempt_poller(
+                            pollers,
+                            poll_api,
+                            directory.clone(),
+                            poll_events,
+                            AttemptKind::OAuth,
+                            integration_id.clone(),
+                            attempt.attempt_id.clone(),
+                        );
+                        event(EngineEvent::AuthAttemptStarted {
+                            integration_id,
+                            kind: "oauth".into(),
+                            method: method_id,
+                            attempt_id: attempt.attempt_id,
+                            url: (!attempt.url.is_empty()).then_some(attempt.url),
+                            command: None,
+                            instructions: attempt.instructions,
+                        })
+                    }
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::PollOAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.oauth_status(&directory, &call_integration, &call_attempt) => match result {
+                    Ok(status) => auth_status_events(integration_id, attempt_id, status),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::CancelOAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            pollers.stop(&attempt_id);
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.cancel_oauth(&directory, &call_integration, &call_attempt) => match result {
+                    Ok(()) => event(EngineEvent::AuthAttemptCancelled { integration_id }),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::CompleteOAuth {
+            integration_id,
+            attempt_id,
+            code,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = async {
+                    api.complete_oauth(&directory, &call_integration, &call_attempt, code).await?;
+                    api.oauth_status(&directory, &call_integration, &call_attempt).await
+                } => match result {
+                    Ok(status) => auth_status_events(integration_id, attempt_id, status),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::StartCommandAuth {
+            integration_id,
+            method_id,
+            command,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_method = method_id.clone();
+            let poll_api = api.clone();
+            let poll_events = event_tx.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.start_command(&directory, &call_integration, &call_method) => match result {
+                    Ok(attempt) if attempt.attempt_id.is_empty() => event(EngineEvent::AuthAttemptFailed {
+                        integration_id,
+                        message: "OpenCode returned an attempt without an id.".into(),
+                    }),
+                    Ok(attempt) => {
+                        spawn_attempt_poller(
+                            pollers,
+                            poll_api,
+                            directory.clone(),
+                            poll_events,
+                            AttemptKind::Command,
+                            integration_id.clone(),
+                            attempt.attempt_id.clone(),
+                        );
+                        event(EngineEvent::AuthAttemptStarted {
+                            integration_id,
+                            kind: "command".into(),
+                            method: method_id,
+                            attempt_id: attempt.attempt_id,
+                            url: None,
+                            command: Some(command),
+                            instructions: String::new(),
+                        })
+                    }
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::PollCommandAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.command_status(&directory, &call_integration, &call_attempt) => match result {
+                    Ok(status) => auth_status_events(integration_id, attempt_id, status),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::CancelCommandAuth {
+            integration_id,
+            attempt_id,
+        } => {
+            pollers.stop(&attempt_id);
+            let call_integration = integration_id.clone();
+            let call_attempt = attempt_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.cancel_command(&directory, &call_integration, &call_attempt) => match result {
+                    Ok(()) => event(EngineEvent::AuthAttemptCancelled { integration_id }),
+                    Err(message) => event(EngineEvent::AuthAttemptFailed { integration_id, message }),
+                }
+            }
+        }
+        EngineCommandKind::SendKey {
+            integration_id,
+            key,
+        } => {
+            let call_integration = integration_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.send_key(&directory, &call_integration, &key) => event(match result {
+                    Ok(()) => EngineEvent::ProviderConnected { integration_id },
+                    Err(message) => EngineEvent::AuthAttemptFailed { integration_id, message },
+                }),
+            }
+        }
+        EngineCommandKind::ConnectExternal {
+            integration_id,
+            method_id,
+        } => {
+            let call_integration = integration_id.clone();
+            let call_method = method_id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.connect_external(&directory, &call_integration, &call_method) => event(match result {
+                    Ok(()) => EngineEvent::ProviderConnected { integration_id },
+                    Err(message) => EngineEvent::AuthAttemptFailed { integration_id, message },
+                }),
+            }
+        }
+        EngineCommandKind::LoadSavedPermissions {
+            request_id,
+            project_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.saved_permissions(&project_id) => {
+                event(EngineEvent::SavedPermissionsLoaded { request_id, result })
+            }
+        },
+        EngineCommandKind::DeleteSavedPermission { id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.delete_saved_permission(&id) => {
+                event(EngineEvent::SavedPermissionDeleted { id, result })
+            }
+        },
+        EngineCommandKind::LoadMcp { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.mcp_servers(&directory) => event(EngineEvent::McpLoaded { request_id, result }),
+        },
+        EngineCommandKind::AddMcp { name, config } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.add_mcp(&directory, &name, config) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::McpError {
+                    name,
+                    message: format!("Could not add the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::RemoveMcp { name } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.remove_mcp(&directory, &name) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::McpError {
+                    name,
+                    message: format!("Could not remove the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::ConnectMcp { name } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.connect_mcp(&directory, &name) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::McpError {
+                    name,
+                    message: format!("Could not connect the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::DisconnectMcp { name } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.disconnect_mcp(&directory, &name) => match result {
+                Ok(()) => event(EngineEvent::McpChanged { name }),
+                Err(message) => event(EngineEvent::McpError {
+                    name,
+                    message: format!("Could not disconnect the MCP server: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::LoadPlugins { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.plugins(&directory) => event(EngineEvent::PluginsLoaded { request_id, result }),
+        },
+        EngineCommandKind::CheckPlugins { request_id } => {
+            let now = std::time::Instant::now();
+            if plugin_check_at
+                .is_some_and(|at| now.duration_since(at) < std::time::Duration::from_secs(60))
+            {
+                event(EngineEvent::PluginsChecked {
+                    request_id,
+                    result: Ok(()),
+                })
+            } else {
+                *plugin_check_at = Some(now);
+                tokio::select! {
+                    _ = &mut *shutdown => CommandResult::Shutdown,
+                    result = api.check_plugins() => event(EngineEvent::PluginsChecked { request_id, result }),
+                }
+            }
+        }
+        EngineCommandKind::UpdatePlugin { id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.update_plugins(&directory, vec![id.clone()]) => event(EngineEvent::PluginUpdated { id, result }),
+        },
+        EngineCommandKind::LoadUsageLimits { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.usage_limits(&directory) => event(EngineEvent::UsageLimitsLoaded { request_id, result }),
+        },
+        EngineCommandKind::Compact { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.compact(&session_id) => match result {
+                Ok(()) => event(EngineEvent::CompactionRequested { session_id }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not compact the session: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::LoadContext { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.context(&session_id) => match result {
+                Ok(messages) => event(EngineEvent::ContextLoaded { session_id, messages }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not load the context: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::StageRevert {
+            session_id,
+            message_id,
+            files,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.stage_revert(&session_id, message_id, files) => match result {
+                Ok(revert) => event(EngineEvent::RevertStaged { session_id, revert }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not stage the revert: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::CommitRevert { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.commit_revert(&session_id) => match result {
+                Ok(()) => event(EngineEvent::RevertCommitted {
+                    session_id,
+                    message_id: String::new(),
+                }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not commit the revert: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::ClearRevert { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.clear_revert(&session_id) => match result {
+                Ok(()) => event(EngineEvent::RevertCleared { session_id }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not clear the revert: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::CreateForm {
+            session_id,
+            title,
+            fields,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.create_form(&session_id, title, fields) => match result {
+                Ok(form) => event(EngineEvent::FormCreated { form }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not create the form: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::LoadForms { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.forms(&session_id) => match result {
+                Ok(forms) => event(EngineEvent::FormsLoaded { session_id, forms }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not load forms: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::ReplyForm {
+            session_id,
+            form_id,
+            answer,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.reply_form(&session_id, &form_id, answer) => match result {
+                Ok(()) => event(EngineEvent::FormSettled { form_id }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not answer the form: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::DismissForm {
+            session_id,
+            form_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.dismiss_form(&session_id, &form_id) => match result {
+                Ok(()) => event(EngineEvent::FormSettled { form_id }),
+                Err(message) => event(EngineEvent::FormError {
+                    message: format!("Could not dismiss the form: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::LoadInbox { session_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.inbox(&session_id) => match result {
+                Ok(items) => event(EngineEvent::InboxLoaded { session_id, items }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not load the inbox: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::CancelInbox {
+            session_id,
+            inbox_id,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                api.cancel_inbox(&session_id, &inbox_id).await?;
+                api.inbox(&session_id).await
+            } => match result {
+                Ok(items) => event(EngineEvent::InboxLoaded { session_id, items }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not cancel the prompt: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::SetInboxDelivery {
+            session_id,
+            inbox_id,
+            delivery,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                api.set_inbox_delivery(&session_id, &inbox_id, delivery).await?;
+                api.inbox(&session_id).await
+            } => match result {
+                Ok(items) => event(EngineEvent::InboxLoaded { session_id, items }),
+                Err(message) => event(EngineEvent::CommandFailed {
+                    message: format!("Could not change the delivery: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::ForkSession { session_id, before } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.fork(&session_id, before) => event(match result {
+                Ok(session) => EngineEvent::SessionForked { session },
+                Err(message) => EngineEvent::CommandFailed {
+                    message: format!("Could not fork the session: {message}"),
+                },
+            }),
+        },
+        EngineCommandKind::DeleteSession { id } => {
             let call_id = id.clone();
             tokio::select! {
                 _ = &mut *shutdown => CommandResult::Shutdown,
@@ -353,7 +1351,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::LoadTranscript { session_id } => {
+        EngineCommandKind::LoadTranscript { session_id } => {
             let call_id = session_id.clone();
             tokio::select! {
                 _ = &mut *shutdown => CommandResult::Shutdown,
@@ -372,7 +1370,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::SendPrompt {
+        EngineCommandKind::SendPrompt {
             session_id,
             request,
         } => {
@@ -399,7 +1397,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::RunCommand {
+        EngineCommandKind::RunCommand {
             session_id,
             request,
         } => {
@@ -422,7 +1420,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::SetSessionModel { session_id, model } => {
+        EngineCommandKind::SetSessionModel { session_id, model } => {
             let call_id = session_id.clone();
             let call_model = model.clone();
             tokio::select! {
@@ -438,7 +1436,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::SetSessionAgent { session_id, agent } => {
+        EngineCommandKind::SetSessionAgent { session_id, agent } => {
             let call_id = session_id.clone();
             let call_agent = agent.clone();
             tokio::select! {
@@ -454,7 +1452,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::FindFiles {
+        EngineCommandKind::FindFiles {
             request_id,
             query,
             limit,
@@ -462,19 +1460,57 @@ async fn run_command(
             let call_query = query.clone();
             tokio::select! {
                 _ = &mut *shutdown => CommandResult::Shutdown,
-                result = api.find_files(&call_query, limit) => event(EngineEvent::FilesFound {
+                result = api.find_files(&directory, &call_query, limit) => event(EngineEvent::FilesFound {
                     request_id,
                     result,
                 }),
             }
         }
-        EngineCommand::ListCatalog { request_id, kind } => {
+        EngineCommandKind::LoadVcsStatus { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_status(&directory) => event(EngineEvent::VcsStatusLoaded { request_id, result }),
+        },
+        EngineCommandKind::LoadVcsBase { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_base(&directory) => event(EngineEvent::VcsBaseLoaded { request_id, result }),
+        },
+        EngineCommandKind::InitRepo { request_id } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_init(&directory) => event(EngineEvent::RepoInitialized { request_id, result }),
+        },
+        EngineCommandKind::LoadVcsDiff {
+            request_id,
+            mode,
+            base,
+            context,
+            untracked,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.vcs_diff(&directory, &mode, base.as_deref(), context.as_deref(), &untracked) => {
+                event(EngineEvent::VcsDiffLoaded { request_id, result })
+            }
+        },
+        EngineCommandKind::LoadSessionDiff {
+            request_id,
+            session_id,
+            from,
+            to,
+            context,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.session_diff(&session_id, from.as_deref(), to.as_deref(), context.as_deref()) => {
+                event(EngineEvent::SessionDiffLoaded { request_id, result })
+            }
+        },
+        EngineCommandKind::ListCatalog { request_id, kind } => {
             let load = async {
                 match kind {
-                    CatalogKind::Commands => api.commands().await.map(CatalogData::Commands),
-                    CatalogKind::Skills => api.skills().await.map(CatalogData::Skills),
-                    CatalogKind::Agents => api.agents().await.map(CatalogData::Agents),
-                    CatalogKind::Models => api.models().await.map(CatalogData::Models),
+                    CatalogKind::Commands => {
+                        api.commands(&directory).await.map(CatalogData::Commands)
+                    }
+                    CatalogKind::Skills => api.skills(&directory).await.map(CatalogData::Skills),
+                    CatalogKind::Agents => api.agents(&directory).await.map(CatalogData::Agents),
+                    CatalogKind::Models => api.models(&directory).await.map(CatalogData::Models),
                 }
             };
             tokio::select! {
@@ -482,7 +1518,7 @@ async fn run_command(
                 result = load => event(EngineEvent::CatalogLoaded { request_id, kind, result }),
             }
         }
-        EngineCommand::Interrupt { session_id } => {
+        EngineCommandKind::Interrupt { session_id } => {
             let call_id = session_id.clone();
             tokio::select! {
                 _ = &mut *shutdown => CommandResult::Shutdown,
@@ -497,7 +1533,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::LoadPermissions { session_id } => {
+        EngineCommandKind::LoadPermissions { session_id } => {
             let call_id = session_id.clone();
             tokio::select! {
                 _ = &mut *shutdown => CommandResult::Shutdown,
@@ -516,7 +1552,7 @@ async fn run_command(
                 }),
             }
         }
-        EngineCommand::ReplyPermission {
+        EngineCommandKind::ReplyPermission {
             session_id,
             request_id,
             reply,
@@ -543,7 +1579,151 @@ async fn run_command(
                 }
             }
         }
+        EngineCommandKind::CreatePty { request } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.create_pty(&directory, request) => match result {
+                Ok(pty) => event(EngineEvent::PtyCreated { pty }),
+                Err(message) => event(EngineEvent::PtyError {
+                    id: String::new(),
+                    message: format!("Could not create the terminal: {message}"),
+                }),
+            },
+        },
+        EngineCommandKind::ListPtys => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.ptys(&directory) => event(EngineEvent::PtysLoaded { result }),
+        },
+        EngineCommandKind::ResizePty { id, cols, rows } => {
+            let call_id = id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.resize_pty(&directory, &call_id, cols, rows) => match result {
+                    Ok(pty) => event(EngineEvent::PtyCreated { pty }),
+                    Err(message) => event(EngineEvent::PtyError {
+                        id,
+                        message: format!("Could not resize the terminal: {message}"),
+                    }),
+                },
+            }
+        }
+        EngineCommandKind::WritePty { id, bytes } => match pty_links.write(&id, bytes) {
+            Ok(()) => CommandResult::None,
+            Err(message) => event(EngineEvent::PtyError { id, message }),
+        },
+        EngineCommandKind::DeletePty { id } => {
+            // Stop the reader before the server tears the process down, so the
+            // close event has a single source.
+            pty_links.close(&id);
+            let call_id = id.clone();
+            tokio::select! {
+                _ = &mut *shutdown => CommandResult::Shutdown,
+                result = api.delete_pty(&directory, &call_id) => match result {
+                    Ok(()) => event(EngineEvent::PtyClosed { id }),
+                    Err(message) => event(EngineEvent::PtyError {
+                        id,
+                        message: format!("Could not delete the terminal: {message}"),
+                    }),
+                },
+            }
+        }
+        EngineCommandKind::ConnectPty { id } => {
+            if pty_links.is_connected(&id) {
+                return CommandResult::None;
+            }
+            let ticket = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = api.pty_ticket(&directory, &id) => result,
+            };
+            let ticket = match ticket {
+                Ok(ticket) => ticket,
+                Err(message) => {
+                    return event(EngineEvent::PtyError {
+                        id,
+                        message: format!("Could not authorize the terminal connection: {message}"),
+                    });
+                }
+            };
+            let url = match api.pty_connect_url(&directory, &id, &ticket.ticket, None) {
+                Ok(url) => url,
+                Err(message) => return event(EngineEvent::PtyError { id, message }),
+            };
+            let (input, input_rx) = async_channel::unbounded();
+            let task = tokio::spawn(pump_pty(id.clone(), url, input_rx, event_tx.clone()));
+            pty_links.insert(id, input, task);
+            CommandResult::None
+        }
+        EngineCommandKind::ExportSession {
+            session_id,
+            sanitize,
+            path,
+        } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = write_export(api, &session_id, sanitize, &path) => match result {
+                Ok(bytes) => event(EngineEvent::SessionExported {
+                    session_id,
+                    path,
+                    bytes,
+                }),
+                Err(message) => event(EngineEvent::SessionExportError { message }),
+            },
+        },
+        EngineCommandKind::PreviewImport { path } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = read_import(&path) => match result {
+                Ok(transfer) => event(EngineEvent::ImportPreviewed { path, transfer }),
+                Err(message) => event(EngineEvent::SessionImportError { message }),
+            },
+        },
+        EngineCommandKind::ImportSession { path, copy } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = async {
+                let transfer = read_import(&path).await?;
+                let transfer = if copy {
+                    crate::features::transfer::import_as_copy(transfer)
+                } else {
+                    transfer
+                };
+                api.import_session(&directory, &transfer).await
+            } => match result {
+                Ok(session) => event(EngineEvent::SessionImported { session }),
+                Err(message) => event(EngineEvent::SessionImportError { message }),
+            },
+        },
+        EngineCommandKind::LoadStats { request_id, range } => tokio::select! {
+            _ = &mut *shutdown => CommandResult::Shutdown,
+            result = api.session_stats(range) => event(EngineEvent::StatsLoaded { request_id, result }),
+        },
     }
+}
+
+/// Fetch an export and write it to the user's file. The payload is written
+/// pretty-printed so a person can inspect what leaves the machine.
+async fn write_export(
+    api: &SessionApi,
+    session_id: &str,
+    sanitize: bool,
+    path: &Path,
+) -> Result<u64, String> {
+    let transfer = api.export_session(session_id, sanitize).await?;
+    let bytes = serde_json::to_vec_pretty(&transfer)
+        .map_err(|err| format!("Could not encode the export: {err}"))?;
+    tokio::fs::write(path, &bytes)
+        .await
+        .map_err(|err| format!("Could not write {}: {err}", path.display()))?;
+    Ok(bytes.len() as u64)
+}
+
+/// Read and structurally parse an export file. The core layer owns the
+/// product-level rules; this only rejects a file that is not an export at all.
+async fn read_import(path: &Path) -> Result<harness_protocol::SessionTransfer, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|err| format!("Could not read {}: {err}", path.display()))?;
+    let transfer = harness_protocol::SessionTransfer::parse(&bytes)?;
+    if transfer.session_id().trim().is_empty() {
+        return Err("This export has no session id.".into());
+    }
+    Ok(transfer)
 }
 
 /// Keep one SSE connection open, forwarding parsed updates to the UI.
@@ -652,4 +1832,122 @@ fn pick_port() -> io::Result<u16> {
 
 fn random_password() -> String {
     format!("{:032x}", rand::random::<u128>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_directories_must_be_canonical_and_exist() {
+        let base = std::env::temp_dir().join(format!(
+            "rust-harness-canonical-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&base).expect("create temp base");
+        let canonical = std::fs::canonicalize(&base).expect("canonical base");
+        let canonical = canonical.to_string_lossy().into_owned();
+        assert_eq!(
+            canonical_project_directory(&canonical).as_deref(),
+            Ok(canonical.as_str())
+        );
+
+        let relative = canonical_project_directory("relative/path").expect_err("relative path");
+        assert!(relative.contains("absolute"), "{relative}");
+
+        let missing = std::fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temp")
+            .join("rust-harness-definitely-missing");
+        let missing = missing.to_string_lossy().into_owned();
+        let error = canonical_project_directory(&missing).expect_err("missing path");
+        assert!(error.contains("no longer available"), "{error}");
+
+        #[cfg(unix)]
+        {
+            let link = base.join("link");
+            std::os::unix::fs::symlink(&canonical, &link).expect("create symlink");
+            let link = link.to_string_lossy().into_owned();
+            let error = canonical_project_directory(&link).expect_err("symlink");
+            assert!(error.contains("must be canonical"), "{error}");
+            assert!(error.contains(&canonical), "{error}");
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn oauth_poll_stops_at_timeout() {
+        assert_eq!(
+            poll_step(
+                AUTH_POLL_LIMIT - Duration::from_secs(1),
+                &AuthStatus::Pending
+            ),
+            PollStep::Wait
+        );
+        assert_eq!(
+            poll_step(AUTH_POLL_LIMIT, &AuthStatus::Pending),
+            PollStep::TimedOut
+        );
+        assert_eq!(
+            poll_step(AUTH_POLL_LIMIT, &AuthStatus::Complete),
+            PollStep::Finished,
+            "a completed attempt wins over the elapsed cap"
+        );
+        assert_eq!(
+            poll_step(Duration::from_secs(1), &AuthStatus::Failed),
+            PollStep::Finished
+        );
+        assert_eq!(
+            poll_step(
+                Duration::from_secs(1),
+                &AuthStatus::Unknown("queued".into())
+            ),
+            PollStep::Wait
+        );
+    }
+
+    #[test]
+    fn auth_status_events_report_completion_and_failure() {
+        let completed = auth_status_events(
+            "acme".into(),
+            "att_1".into(),
+            AttemptStatus {
+                status: AuthStatus::Complete,
+                message: None,
+            },
+        );
+        let CommandResult::Events(batch) = completed else {
+            panic!("expected a batch");
+        };
+        assert!(matches!(
+            batch.as_ref(),
+            [
+                EngineEvent::AuthAttemptUpdated { .. },
+                EngineEvent::ProviderConnected { .. }
+            ]
+        ));
+
+        let failed = auth_status_events(
+            "acme".into(),
+            "att_1".into(),
+            AttemptStatus {
+                status: AuthStatus::Expired,
+                message: None,
+            },
+        );
+        let CommandResult::Events(batch) = failed else {
+            panic!("expected a batch");
+        };
+        assert!(matches!(
+            batch.as_ref(),
+            [
+                EngineEvent::AuthAttemptUpdated { .. },
+                EngineEvent::AuthAttemptFailed { message, .. }
+            ] if message.contains("expired")
+        ));
+    }
 }

@@ -102,8 +102,10 @@ Rules:
    non-loopback interface. Verified on v2.1.4: every `/api/*` route returns
    `401 {"_tag":"UnauthorizedError"}` without credentials, while `/` serves the
    web UI unauthenticated.
-4. **Set the working directory** to the selected project root so config discovery
-   and the agent's tool sandbox match the user's project.
+4. **Set the working directory** to the launch project so initial config
+   discovery works. It is not the routing mechanism: every project-scoped
+   command carries its own canonical `directory`, so one sidecar serves several
+   open projects at once.
 5. **Wait for readiness**: poll `GET /api/session` with basic auth until it
    returns 200 (v2.1.x). Newer builds expose `GET /global/health`; try it first
    when present. Surface child stderr on failure.
@@ -128,6 +130,19 @@ the project directory and otherwise stays out of the way — that is what makes
 > streaming text arrives as `session.text.started/delta/ended` carrying
 > `assistantMessageID` and the part `ordinal`, and turns end with
 > `session.execution.succeeded/failed/interrupted`. Unknown events are ignored.
+>
+> Project routing (v2.2.7): `GET /api/project?archived=false` returns a bare
+> `[Project]` array; a project materializes on the first session request for
+> its directory. Location-scoped endpoints take `location[directory]`
+> (`GET /api/session` takes plain `directory`), `POST /api/session` pins the new
+> session with `{"location":{"directory": …}}`, and session-addressed routes
+> (`/api/session/:id/…`) take no directory at all. The engine therefore keeps
+> **no current project**: each `EngineCommand` names the canonical directory it
+> applies to, the supervisor canonicalizes it once at the boundary and rejects
+> a non-canonical or missing path with an actionable message, and only the
+> location-scoped request builders forward it. Adding a folder records the path
+> locally; the UI does not consult the server's global project registry to
+> build its switcher.
 >
 > History (v2.1.4): OpenCode v2.1.4 stores session locations as
 > canonical absolute paths and `GET /api/session` accepts `directory`, `parentID`,
@@ -287,6 +302,7 @@ defaults that field.
 ```
 Workspace (root view)
 ├── EngineStatus     connecting | ready | crashed | restarting
+├── ProjectStore     projects in the switcher, active project, per-project drafts
 ├── SessionStore     id → SessionSummary, active session, per-session status
 ├── ChatStore        id → Transcript { entries: Vec<Entry> }, stream buffers
 ├── ComposerState    draft text, `PromptDraft`, attachment chips, picker

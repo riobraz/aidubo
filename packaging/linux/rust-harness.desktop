@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rust Harness
+Comment=Native desktop client for the OpenCode agent
+Exec=rust-harness %f
+Icon=rust-harness
+Terminal=false
+Categories=Development;Utility;
+Keywords=opencode;agent;ai;coding;
+StartupWMClass=rust-harness

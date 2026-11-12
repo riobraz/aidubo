@@ -57,7 +57,10 @@ fn boots_reaches_ready_and_round_trips_sessions() {
         sessions.len()
     );
 
-    assert!(engine.create_session(), "engine stopped before create");
+    assert!(
+        engine.create_session(project.canonical(),),
+        "engine stopped before create"
+    );
     let created = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     });
@@ -80,7 +83,7 @@ fn boots_reaches_ready_and_round_trips_sessions() {
     );
 
     assert!(
-        engine.rename_session(&id, "M1 e2e session"),
+        engine.rename_session(project.canonical(), &id, "M1 e2e session"),
         "engine stopped before rename"
     );
     let renamed = wait_for(&events, deadline, |event| {
@@ -98,7 +101,7 @@ fn boots_reaches_ready_and_round_trips_sessions() {
 
     // A fresh session has an empty timeline.
     assert!(
-        engine.load_transcript(&id),
+        engine.load_transcript(project.canonical(), &id),
         "engine stopped before transcript load"
     );
     let transcript = wait_for(&events, deadline, |event| {
@@ -115,7 +118,10 @@ fn boots_reaches_ready_and_round_trips_sessions() {
     assert!(messages.is_empty(), "new session transcript is not empty");
 
     // Interrupting an idle session is a no-op, not an error.
-    assert!(engine.interrupt(&id), "engine stopped before interrupt");
+    assert!(
+        engine.interrupt(project.canonical(), &id),
+        "engine stopped before interrupt"
+    );
     let interrupted = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::Interrupted { .. })
     });
@@ -129,7 +135,10 @@ fn boots_reaches_ready_and_round_trips_sessions() {
     assert_eq!(session_id, id);
     assert!(!interrupted);
 
-    assert!(engine.delete_session(&id), "engine stopped before delete");
+    assert!(
+        engine.delete_session(project.canonical(), &id),
+        "engine stopped before delete"
+    );
     let deleted = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionDeleted { .. })
     });
@@ -139,7 +148,10 @@ fn boots_reaches_ready_and_round_trips_sessions() {
     assert_eq!(deleted_id, id);
 
     // Confirm the delete reached the server, not just our local mirror.
-    assert!(engine.refresh_sessions(), "engine stopped before refresh");
+    assert!(
+        engine.refresh_sessions(project.canonical(),),
+        "engine stopped before refresh"
+    );
     let reloaded = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionsLoaded { .. })
     });
@@ -204,7 +216,10 @@ fn streams_assistant_text_from_a_mock_provider() {
     // Prompting before the SSE stream is open would race the deltas.
     support::wait_for_stream(&events, deadline);
 
-    assert!(engine.create_session(), "engine stopped before create");
+    assert!(
+        engine.create_session(project.canonical(),),
+        "engine stopped before create"
+    );
     let created = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     });
@@ -215,6 +230,7 @@ fn streams_assistant_text_from_a_mock_provider() {
 
     assert!(
         engine.send_prompt(
+            project.canonical(),
             &id,
             PromptRequest {
                 text: "hi".into(),
@@ -257,7 +273,7 @@ fn streams_assistant_text_from_a_mock_provider() {
 
     // The turn is durable: the same text comes back from the timeline.
     assert!(
-        engine.load_transcript(&id),
+        engine.load_transcript(project.canonical(), &id),
         "engine stopped before transcript load"
     );
     let transcript = wait_for(&events, deadline, |event| {
@@ -330,7 +346,10 @@ fn streams_reasoning_and_tool_calls_from_a_mock_provider() {
     });
     support::wait_for_stream(&events, deadline);
 
-    assert!(engine.create_session(), "engine stopped before create");
+    assert!(
+        engine.create_session(project.canonical(),),
+        "engine stopped before create"
+    );
     let created = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     });
@@ -341,6 +360,7 @@ fn streams_reasoning_and_tool_calls_from_a_mock_provider() {
 
     assert!(
         engine.send_prompt(
+            project.canonical(),
             &id,
             PromptRequest {
                 text: format!("read {}", target.display()),
@@ -426,7 +446,7 @@ fn streams_reasoning_and_tool_calls_from_a_mock_provider() {
 
     // The snapshot preserves the reasoning and the finished tool state.
     assert!(
-        engine.load_transcript(&id),
+        engine.load_transcript(project.canonical(), &id),
         "engine stopped before transcript load"
     );
     let transcript = wait_for(&events, deadline, |event| {
@@ -493,7 +513,10 @@ fn asks_for_permission_and_unblocks_after_reply() {
     });
     support::wait_for_stream(&events, deadline);
 
-    assert!(engine.create_session(), "engine stopped before create");
+    assert!(
+        engine.create_session(project.canonical(),),
+        "engine stopped before create"
+    );
     let created = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     });
@@ -504,6 +527,7 @@ fn asks_for_permission_and_unblocks_after_reply() {
 
     assert!(
         engine.send_prompt(
+            project.canonical(),
             &id,
             PromptRequest {
                 text: "please run the command".into(),
@@ -533,7 +557,7 @@ fn asks_for_permission_and_unblocks_after_reply() {
 
     // The pending list agrees with the live event.
     assert!(
-        engine.load_permissions(&id),
+        engine.load_permissions(project.canonical(), &id),
         "engine stopped before permission load"
     );
     let listed = wait_for(&events, deadline, |event| {
@@ -553,7 +577,7 @@ fn asks_for_permission_and_unblocks_after_reply() {
     );
 
     assert!(
-        engine.reply_permission(&id, &request.id, PermissionReply::Once),
+        engine.reply_permission(project.canonical(), &id, &request.id, PermissionReply::Once),
         "engine stopped before permission reply"
     );
 
@@ -585,7 +609,7 @@ fn asks_for_permission_and_unblocks_after_reply() {
 
     // Nothing is left waiting once the turn ends.
     assert!(
-        engine.load_permissions(&id),
+        engine.load_permissions(project.canonical(), &id),
         "engine stopped before permission reload"
     );
     let reloaded = wait_for(&events, deadline, |event| {
@@ -629,7 +653,10 @@ fn declining_permission_fails_the_tool_and_interrupts_the_turn() {
     });
     support::wait_for_stream(&events, deadline);
 
-    assert!(engine.create_session(), "engine stopped before create");
+    assert!(
+        engine.create_session(project.canonical(),),
+        "engine stopped before create"
+    );
     let created = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     });
@@ -640,6 +667,7 @@ fn declining_permission_fails_the_tool_and_interrupts_the_turn() {
 
     assert!(
         engine.send_prompt(
+            project.canonical(),
             &id,
             PromptRequest {
                 text: "please run the command".into(),
@@ -660,7 +688,12 @@ fn declining_permission_fails_the_tool_and_interrupts_the_turn() {
     };
 
     assert!(
-        engine.reply_permission(&id, &request.id, PermissionReply::Reject),
+        engine.reply_permission(
+            project.canonical(),
+            &id,
+            &request.id,
+            PermissionReply::Reject
+        ),
         "engine stopped before permission reply"
     );
 
@@ -740,7 +773,10 @@ fn attachments_and_session_selection_reach_the_server() {
     };
     support::wait_for_stream(&events, deadline);
 
-    assert!(engine.create_session(), "engine stopped before create");
+    assert!(
+        engine.create_session(project.canonical(),),
+        "engine stopped before create"
+    );
     let created = wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionCreated { .. })
     });
@@ -749,12 +785,12 @@ fn attachments_and_session_selection_reach_the_server() {
     };
     let id = session.id.clone();
 
-    assert!(engine.set_session_agent(&id, "plan"));
+    assert!(engine.set_session_agent(project.canonical(), &id, "plan"));
     wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionAgentSet { .. })
     });
 
-    assert!(engine.list_catalog(41, CatalogKind::Models));
+    assert!(engine.list_catalog(project.canonical(), 41, CatalogKind::Models));
     let loaded = wait_for(&events, deadline, |event| {
         matches!(
             event,
@@ -777,13 +813,13 @@ fn attachments_and_session_selection_reach_the_server() {
         .expect("the catalog contains at least one model")
         .model_ref();
 
-    assert!(engine.set_session_model(&id, model.clone()));
+    assert!(engine.set_session_model(project.canonical(), &id, model.clone()));
     wait_for(&events, deadline, |event| {
         matches!(event, EngineEvent::SessionModelSet { .. })
     });
 
     // Read the session back from the server to prove the selections stuck.
-    assert!(engine.refresh_sessions());
+    assert!(engine.refresh_sessions(project.canonical(),));
     let reloaded = wait_for(&events, deadline, |event| match event {
         EngineEvent::SessionsLoaded { sessions } => sessions.iter().any(|s| s.id == id),
         _ => false,
@@ -801,6 +837,7 @@ fn attachments_and_session_selection_reach_the_server() {
     let path = project.join("notes.txt");
     let uri = format!("file://{}", path.to_string_lossy());
     let request = PromptRequest {
+        delivery: None,
         text: "read @notes.txt".into(),
         files: vec![PromptFile {
             uri: uri.clone(),
@@ -819,7 +856,7 @@ fn attachments_and_session_selection_reach_the_server() {
         skills: Vec::new(),
     };
     assert!(
-        engine.send_prompt(&id, request),
+        engine.send_prompt(project.canonical(), &id, request),
         "engine stopped before prompt"
     );
     let accepted = wait_for(&events, deadline, |event| {
@@ -860,7 +897,7 @@ fn attachments_and_session_selection_reach_the_server() {
             EngineEvent::Stream(StreamEvent::ExecutionFinished { .. })
         )
     });
-    assert!(engine.load_transcript(&id));
+    assert!(engine.load_transcript(project.canonical(), &id));
     let transcript = wait_for(&events, deadline, |event| match event {
         EngineEvent::TranscriptLoaded {
             session_id,

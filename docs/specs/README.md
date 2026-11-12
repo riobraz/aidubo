@@ -195,32 +195,33 @@ Update this table when a node closes.
 | E0 engine-bus | 0 | done |
 | T0 e2e-harness | 0 | done |
 | M14-02 vt-model | 0 | done |
-| M9-01 inbox | 1 | ready |
-| M9-02 fork | 1 | ready |
-| M9-03 revert | 1 | ready |
-| M9-04 compaction-context | 1 | ready |
-| M9-05 forms | 1 | ready |
-| M9-06 usage | 1 | ready |
-| M10-01 vcs-status | 1 | ready |
-| M10-02 diff-model | 1 | ready |
-| M10-03 diff-view | 2 | blocked (M10-02) |
-| M11-01 projects | 1 | ready |
-| M11-02 worktrees | 2 | blocked (M11-01) |
+| M9-01 inbox | 1 | done |
+| M9-02 fork | 1 | done |
+| M9-03 revert | 1 | done |
+| M9-04 compaction-context | 1 | done |
+| M9-05 forms | 1 | done |
+| M9-06 usage | 1 | done |
+| M10-01 vcs-status | 1 | done |
+| M10-02 diff-model | 1 | done |
+| M10-03 diff-view | 2 | done |
+| M11-01 projects | 1 | done |
+| M11-02 worktrees | 2 | ready |
 | M11-03 multi-run | 3 | blocked (M11-02) |
-| M12-01 goals | 2 | blocked (M9-06) |
-| M12-02 schedules | 1 | ready |
-| M12-03 notifications | 1 | ready |
-| M13-01 mcp | 1 | ready |
-| M13-02 providers | 1 | ready |
-| M13-03 saved-permissions | 1 | ready |
-| M13-04 plugins | 1 | ready |
-| M14-01 pty-transport | 1 | ready |
-| M14-03 terminal-view | 2 | blocked (M14-01, M14-02) |
-| M15-01 preview | 1 | ready |
-| M16-01 linux-packaging | 1 | ready |
-| M16-02 updates | 1 | ready |
-| M16-03 session-transfer | 1 | ready |
-| M16-04 diagnostics | 1 | ready |
+| M12-01 goals | 2 | ready |
+| M12-02 schedules | 1 | done |
+| M12-03 notifications | 1 | done |
+| M13-01 mcp | 1 | done |
+| M13-02 providers | 1 | done |
+| M13-03 saved-permissions | 1 | done |
+| M13-04 plugins | 1 | done |
+| M14-01 pty-transport | 1 | done |
+| M14-03 terminal-view | 2 | ready |
+| M15-01 preview | 1 | cancelled |
+| M16-01 linux-packaging | 1 | done |
+| M16-02 updates | 1 | done |
+| M16-03 session-transfer | 1 | done |
+| M16-04 diagnostics | 1 | done |
+| G1 wave-1 gate | 1 | done |
 
 ## 8. What is deliberately not a node
 

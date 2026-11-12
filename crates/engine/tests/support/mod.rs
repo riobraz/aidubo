@@ -8,6 +8,7 @@ pub mod mock;
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
@@ -33,6 +34,14 @@ impl TestProject {
         &self.path
     }
 
+    /// The canonical path the engine requires for every command.
+    pub fn canonical(&self) -> String {
+        std::fs::canonicalize(&self.path)
+            .expect("canonicalize temp project")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     pub fn join(&self, name: &str) -> PathBuf {
         self.path.join(name)
     }
@@ -44,6 +53,18 @@ impl TestProject {
     /// Register an OpenAI-compatible mock provider as the project's model.
     pub fn use_mock_provider(&self, base_url: &str) {
         self.write("opencode.json", &provider_config(base_url));
+    }
+
+    /// Enable the experimental schedules endpoint in the project config.
+    /// `opencode.json` must already exist (for example after
+    /// [`Self::use_mock_provider`]).
+    pub fn enable_schedules(&self) {
+        let path = self.path.join("opencode.json");
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+        let mut config: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse opencode.json");
+        config["experimental"] = serde_json::json!({ "schedules": true });
+        std::fs::write(&path, config.to_string()).expect("write opencode.json");
     }
 }
 
@@ -104,6 +125,8 @@ pub struct Started {
     pub engine: Engine,
     pub events: Receiver<EngineEvent>,
     pub port: u16,
+    /// The canonical project directory commands must name.
+    pub directory: String,
 }
 
 /// Spawn the engine and wait until it answers an authenticated request.
@@ -112,6 +135,18 @@ pub fn start_engine(project: &TestProject) -> Started {
 }
 
 pub fn start_engine_with(config: EngineConfig) -> Started {
+    // OpenCode creates its global SQLite schema on startup. Two servers
+    // starting at once race on the same tables and one exits with "table
+    // `account_state` already exists", so starts inside one test binary are
+    // serialized until the first one is ready.
+    static START_LOCK: Mutex<()> = Mutex::new(());
+    let _start = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let directory = std::fs::canonicalize(&config.project_dir)
+        .unwrap_or_else(|_| config.project_dir.clone())
+        .to_string_lossy()
+        .into_owned();
     let engine = Engine::spawn(config);
     let events = engine.events();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -124,6 +159,31 @@ pub fn start_engine_with(config: EngineConfig) -> Started {
         engine,
         events,
         port,
+        directory,
+    }
+}
+
+/// Keep the tail of the child's stderr so an early exit reports why.
+#[derive(Default)]
+struct RecentLogs(std::collections::VecDeque<String>);
+
+impl RecentLogs {
+    fn push(&mut self, line: String) {
+        const KEPT: usize = 8;
+        self.0.push_back(line);
+        if self.0.len() > KEPT {
+            self.0.pop_front();
+        }
+    }
+
+    fn describe(&self) -> String {
+        let lines = self
+            .0
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\nOpenCode output:\n{lines}")
     }
 }
 
@@ -131,12 +191,19 @@ pub fn start_engine_with(config: EngineConfig) -> Started {
 pub fn wait_for_stream(events: &Receiver<EngineEvent>, deadline: Instant) {
     let mut stream = false;
     let mut sessions = false;
+    let mut logs = RecentLogs::default();
     while !(stream && sessions) {
         if Instant::now() >= deadline {
-            panic!("timed out waiting for the startup events");
+            panic!(
+                "timed out waiting for the startup events{}",
+                logs.describe()
+            );
         }
         match events.try_recv() {
-            Ok(EngineEvent::Failed { message }) => panic!("engine failed: {message}"),
+            Ok(EngineEvent::Failed { message }) => {
+                panic!("engine failed: {message}{}", logs.describe())
+            }
+            Ok(EngineEvent::Log(line)) => logs.push(line),
             Ok(EngineEvent::StreamConnected) => stream = true,
             Ok(EngineEvent::SessionsLoaded { .. }) => sessions = true,
             Ok(_) => {}
@@ -154,12 +221,16 @@ pub fn wait_for(
     deadline: Instant,
     mut predicate: impl FnMut(&EngineEvent) -> bool,
 ) -> EngineEvent {
+    let mut logs = RecentLogs::default();
     loop {
         if Instant::now() >= deadline {
-            panic!("timed out waiting for an engine event");
+            panic!("timed out waiting for an engine event{}", logs.describe());
         }
         match events.try_recv() {
-            Ok(EngineEvent::Failed { message }) => panic!("engine failed: {message}"),
+            Ok(EngineEvent::Failed { message }) => {
+                panic!("engine failed: {message}{}", logs.describe())
+            }
+            Ok(EngineEvent::Log(line)) => logs.push(line),
             Ok(event) => {
                 if std::env::var_os("RUST_HARNESS_DEBUG_EVENTS").is_some() {
                     eprintln!("event: {event:?}");

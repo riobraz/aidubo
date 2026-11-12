@@ -17,4 +17,18 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
+
+[features]
+# Exposes test doubles that never start a sidecar.
+test-support = []
+
+[dev-dependencies]
+harness-core.workspace = true
+
+# Only the M13-01 e2e test spawns this; it is not part of the app bundle.
+[[bin]]
+name = "mcp-echo"
+path = "tests/fixtures/mcp_echo.rs"
+test = false

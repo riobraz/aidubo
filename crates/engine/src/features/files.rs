@@ -6,13 +6,18 @@ use reqwest::Method;
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
 impl SessionApi {
-    /// Search project files for the `@` picker.
-    pub async fn find_files(&self, query: &str, limit: usize) -> Result<Vec<FileEntry>, String> {
+    /// Search files under `directory` for the `@` picker.
+    pub async fn find_files(
+        &self,
+        directory: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<FileEntry>, String> {
         let limit = limit.to_string();
         let response = self
             .request(Method::GET, "/api/fs/find")
             .query(&[
-                ("location[directory]", self.directory.as_str()),
+                ("location[directory]", directory),
                 ("query", query),
                 ("type", "file"),
                 ("limit", limit.as_str()),

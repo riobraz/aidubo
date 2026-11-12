@@ -55,7 +55,7 @@
         "T0"
       ],
       "e2e": "tests/M9-01.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M9-02",
@@ -69,7 +69,7 @@
         "T0"
       ],
       "e2e": "tests/M9-02.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M9-03",
@@ -83,7 +83,7 @@
         "T0"
       ],
       "e2e": "tests/M9-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M9-04",
@@ -97,7 +97,7 @@
         "T0"
       ],
       "e2e": "tests/M9-04.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M9-05",
@@ -111,7 +111,7 @@
         "T0"
       ],
       "e2e": "tests/M9-05.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M9-06",
@@ -125,7 +125,7 @@
         "T0"
       ],
       "e2e": "tests/M9-06.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M10-01",
@@ -139,7 +139,7 @@
         "T0"
       ],
       "e2e": "tests/M10-01.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M10-02",
@@ -153,7 +153,7 @@
         "T0"
       ],
       "e2e": "tests/M10-02.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M11-01",
@@ -168,7 +168,7 @@
         "E0"
       ],
       "e2e": "tests/M11-01.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M12-02",
@@ -182,7 +182,7 @@
         "T0"
       ],
       "e2e": "tests/M12-02.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M12-03",
@@ -196,7 +196,7 @@
         "T0"
       ],
       "e2e": "tests/M12-03.rs @ RUST_HARNESS_NOTIFY_SINK",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M13-01",
@@ -210,7 +210,7 @@
         "T0"
       ],
       "e2e": "tests/M13-01.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M13-02",
@@ -224,7 +224,7 @@
         "T0"
       ],
       "e2e": "tests/M13-02.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M13-03",
@@ -238,7 +238,7 @@
         "T0"
       ],
       "e2e": "tests/M13-03.rs @ RUST_HARNESS_MOCK_PERMISSION_PROVIDER",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M13-04",
@@ -252,7 +252,7 @@
         "T0"
       ],
       "e2e": "tests/M13-04.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M14-01",
@@ -266,7 +266,7 @@
         "T0"
       ],
       "e2e": "tests/M14-01.rs (no model gate)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M15-01",
@@ -279,8 +279,8 @@
       "deps": [
         "T0"
       ],
-      "e2e": "manual checklist (macOS webview)",
-      "status": "ready"
+      "e2e": "not built: GPUI 0.9.0 has no hosted-native-view API",
+      "status": "cancelled"
     },
     {
       "id": "M16-01",
@@ -294,7 +294,7 @@
         "E0"
       ],
       "e2e": "scripts/e2e-linux.sh @ RUST_HARNESS_PACKAGING_E2E",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M16-02",
@@ -307,8 +307,8 @@
       "deps": [
         "E0"
       ],
-      "e2e": "tests/M16-02.rs (local manifest server)",
-      "status": "ready"
+      "e2e": "crates/app/tests/M16-02.rs (local manifest server)",
+      "status": "done"
     },
     {
       "id": "M16-03",
@@ -321,8 +321,8 @@
       "deps": [
         "T0"
       ],
-      "e2e": "tests/M16-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "ready"
+      "e2e": "tests/M16-03.rs",
+      "status": "done"
     },
     {
       "id": "M16-04",
@@ -336,7 +336,7 @@
         "E0"
       ],
       "e2e": "app/tests/diagnostics.rs (--diagnostics)",
-      "status": "ready"
+      "status": "done"
     },
     {
       "id": "M10-03",
@@ -351,7 +351,7 @@
         "M10-02"
       ],
       "e2e": "GPUI view tests + M10-02 data path",
-      "status": "blocked"
+      "status": "done"
     },
     {
       "id": "M11-02",
@@ -365,7 +365,7 @@
         "M11-01"
       ],
       "e2e": "tests/M11-02.rs (no model gate)",
-      "status": "blocked"
+      "status": "ready"
     },
     {
       "id": "M12-01",
@@ -380,7 +380,7 @@
         "T0"
       ],
       "e2e": "tests/M12-01.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "blocked"
+      "status": "ready"
     },
     {
       "id": "M14-03",
@@ -395,7 +395,7 @@
         "M14-02"
       ],
       "e2e": "tests/M14-03.rs @ RUST_HARNESS_PTY_E2E",
-      "status": "blocked"
+      "status": "ready"
     },
     {
       "id": "M11-03",
@@ -459,7 +459,7 @@
         "M16-04"
       ],
       "e2e": "every gate touched by the wave",
-      "status": "blocked"
+      "status": "done"
     },
     {
       "id": "G2",

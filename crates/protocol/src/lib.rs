@@ -9,6 +9,38 @@
 //! Newer builds also expose `/global/health`; [`Health`] models that payload so
 //! the client can detect and use it when present.
 
+mod diff;
+mod form;
+mod inbox;
+mod mcp;
+mod permission_saved;
+mod plugin;
+mod project;
+mod provider;
+mod pty;
+mod revert;
+mod schedule;
+mod transfer;
+mod update;
+mod usage;
+mod vcs;
+
+pub use diff::*;
+pub use form::*;
+pub use inbox::*;
+pub use mcp::*;
+pub use permission_saved::*;
+pub use plugin::*;
+pub use project::*;
+pub use provider::*;
+pub use pty::*;
+pub use revert::*;
+pub use schedule::*;
+pub use transfer::*;
+pub use update::*;
+pub use usage::*;
+pub use vcs::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Standard envelope used by the `/api` collection endpoints.
@@ -17,8 +49,29 @@ pub struct Envelope<T> {
     pub data: T,
 }
 
+/// Token counts for one session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub reasoning: f64,
+    #[serde(default)]
+    pub cache: TokenCache,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct TokenCache {
+    #[serde(default)]
+    pub read: f64,
+    #[serde(default)]
+    pub write: f64,
+}
+
 /// A session as returned by `GET /api/session`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Session {
     pub id: String,
     #[serde(default)]
@@ -33,6 +86,10 @@ pub struct Session {
     pub time: SessionTime,
     #[serde(default)]
     pub location: Option<SessionLocation>,
+    #[serde(default)]
+    pub tokens: Option<TokenUsage>,
+    #[serde(default)]
+    pub cost: Option<f64>,
 }
 
 /// Timestamps attached to a session, in epoch milliseconds.
@@ -160,6 +217,13 @@ impl CatalogKind {
             Self::Models => "models",
         }
     }
+}
+
+/// Body for `POST /api/session/{id}/fork`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ForkRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
 }
 
 /// The project directory a session belongs to.
@@ -474,6 +538,8 @@ pub struct SkillAttachment {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PromptRequest {
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<InboxDelivery>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<PromptFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -595,13 +661,16 @@ pub struct PermissionReplyRequest {
 /// A live update from the server's SSE stream, reduced to what the transcript
 /// needs. The parser lives in `harness-engine`; this stays IO-free so
 /// `harness-core` can apply events without depending on the network stack.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     ExecutionStarted {
         session_id: String,
     },
     ExecutionFinished {
         session_id: String,
+        /// The server's event id. Reconnect replay repeats it, so consumers can
+        /// dedupe one-off effects such as notifications.
+        event_id: String,
         outcome: ExecutionOutcome,
     },
     /// The agent started an assistant message, before any text arrives.
@@ -702,6 +771,10 @@ pub enum StreamEvent {
         error: StructuredError,
         content: Vec<ToolContent>,
     },
+    /// The agent is waiting on a form answer.
+    FormCreated {
+        form: FormInfo,
+    },
     /// The turn is blocked until the user answers this request.
     PermissionAsked {
         request: PermissionRequest,
@@ -711,6 +784,31 @@ pub enum StreamEvent {
         request_id: String,
         reply: PermissionReply,
     },
+    /// The agent started compacting the session.
+    CompactionStarted {
+        session_id: String,
+    },
+    /// Compaction finished.
+    CompactionEnded {
+        session_id: String,
+    },
+    /// Compaction failed.
+    CompactionFailed {
+        session_id: String,
+        message: String,
+    },
+    /// The session's token and cost totals changed.
+    UsageUpdated {
+        session_id: String,
+        tokens: TokenUsage,
+        cost: Option<f64>,
+    },
+    /// The project's files changed on disk. The payload is not needed: the
+    /// view refreshes its own snapshots.
+    FilesystemChanged,
+    /// An MCP server's status or resources changed. The list is reloaded
+    /// instead of patching one entry, because the server is authoritative.
+    McpChanged,
 }
 
 impl StreamEvent {
@@ -734,6 +832,12 @@ impl StreamEvent {
             | Self::ToolFailed { session_id, .. }
             | Self::PermissionReplied { session_id, .. } => session_id,
             Self::PermissionAsked { request } => &request.session_id,
+            Self::FormCreated { form } => &form.session_id,
+            Self::CompactionStarted { session_id }
+            | Self::CompactionEnded { session_id }
+            | Self::CompactionFailed { session_id, .. } => session_id,
+            Self::UsageUpdated { session_id, .. } => session_id,
+            Self::FilesystemChanged | Self::McpChanged => "",
         }
     }
 }
@@ -749,6 +853,30 @@ pub enum ExecutionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_parses_tokens_and_cost() {
+        let json = r#"{"id":"s1","cost":0.42,"tokens":{"input":10,"output":5,"reasoning":2,"cache":{"read":3,"write":1}}}"#;
+        let session: Session = serde_json::from_str(json).expect("session");
+        let tokens = session.tokens.expect("tokens");
+        assert_eq!(tokens.input, 10.0);
+        assert_eq!(tokens.cache.read, 3.0);
+        assert_eq!(session.cost, Some(0.42));
+        let bare: Session = serde_json::from_str(r#"{"id":"s2"}"#).expect("bare");
+        assert!(bare.tokens.is_none());
+        assert!(bare.cost.is_none());
+    }
+
+    #[test]
+    fn fork_request_serializes_before_and_omits_none() {
+        let with = serde_json::to_string(&ForkRequest {
+            before: Some("msg_1".into()),
+        })
+        .expect("json");
+        assert_eq!(with, r#"{"before":"msg_1"}"#);
+        let without = serde_json::to_string(&ForkRequest::default()).expect("json");
+        assert_eq!(without, "{}");
+    }
 
     #[test]
     fn parses_session_envelope() {
@@ -1007,6 +1135,7 @@ mod tests {
     fn prompt_request_serializes_attachments() {
         let request = PromptRequest {
             text: "read @README.md and $opencode".into(),
+            delivery: None,
             files: vec![PromptFile {
                 uri: "file:///tmp/README.md".into(),
                 source: Some(FileSource::Uri {

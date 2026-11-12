@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | done |
 | Wave | 1 |
 | Size | L |
 | Depends on | T0, E0 |
@@ -106,6 +106,7 @@ Creating a project from a template, remote projects, sandboxes, worktrees
 | core | `project_drafts_are_per_project` | no draft bleed |
 | engine | `list_sessions_scopes_by_directory` | location query |
 | engine | `create_session_pins_directory` | pinned location |
+| app | `project_list_round_trips_with_active`, `missing_project_is_dropped_with_a_notice` | persistence |
 
 E2E (`tests/M11-01.rs`, no model gate): two temp dirs, `ListProjects`, add
 both, create a session in each, assert `GET /api/session?directory=A` returns
@@ -115,10 +116,10 @@ server, not filtered locally.
 
 ## 9. Acceptance
 
-- [ ] Two projects are usable at once without cross-listing sessions.
-- [ ] A non-canonical path is rejected with an actionable message.
-- [ ] Project list and active project survive an app restart.
-- [ ] No command relies on a hidden current directory.
+- [x] Two projects are usable at once without cross-listing sessions.
+- [x] A non-canonical path is rejected with an actionable message.
+- [x] Project list and active project survive an app restart.
+- [x] No command relies on a hidden current directory.
 
 ## 10. Risks
 

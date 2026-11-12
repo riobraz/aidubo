@@ -10,11 +10,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  OPENCODE_VERSION: "2.2.6"
+  OPENCODE_VERSION: "2.2.7"
 
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
     steps:

@@ -8,12 +8,12 @@ use reqwest::Method;
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
 impl SessionApi {
-    /// Root sessions in this project, newest first.
-    pub async fn list(&self) -> Result<Vec<Session>, String> {
+    /// Root sessions in `directory`, newest first.
+    pub async fn list(&self, directory: &str) -> Result<Vec<Session>, String> {
         let response = self
             .request(Method::GET, "/api/session")
             .query(&[
-                ("directory", self.directory.as_str()),
+                ("directory", directory),
                 ("parentID", "null"),
                 ("limit", "100"),
                 ("order", "desc"),
@@ -26,12 +26,12 @@ impl SessionApi {
         Ok(list.data)
     }
 
-    /// Create a root session pinned to this project.
-    pub async fn create(&self) -> Result<Session, String> {
+    /// Create a root session pinned to `directory`.
+    pub async fn create(&self, directory: &str) -> Result<Session, String> {
         let request = CreateSessionRequest {
             title: None,
             location: Some(SessionLocation {
-                directory: self.directory.clone(),
+                directory: directory.to_owned(),
             }),
         };
         let response = self
@@ -65,5 +65,21 @@ impl SessionApi {
             .map_err(network_error)?;
         ensure_success(response).await?;
         Ok(())
+    }
+}
+
+impl SessionApi {
+    /// Fork a session before the given message (or the whole session).
+    pub async fn fork(&self, id: &str, before: Option<String>) -> Result<Session, String> {
+        let request = harness_protocol::ForkRequest { before };
+        let response = self
+            .request(Method::POST, &format!("/api/session/{id}/fork"))
+            .json(&request)
+            .send()
+            .await
+            .map_err(network_error)?;
+        let response = ensure_success(response).await?;
+        let envelope: Envelope<Session> = response.json().await.map_err(decode_error)?;
+        Ok(envelope.data)
     }
 }

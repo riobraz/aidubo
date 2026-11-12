@@ -75,6 +75,13 @@ impl SessionStore {
         true
     }
 
+    /// Select the first (newest) session, if any.
+    pub fn select_newest(&mut self) -> Option<String> {
+        let id = self.sessions.first()?.id.clone();
+        self.selected = Some(id.clone());
+        Some(id)
+    }
+
     /// Select a session if it is present.
     pub fn select(&mut self, id: &str) {
         if self.sessions.iter().any(|session| session.id == id) {

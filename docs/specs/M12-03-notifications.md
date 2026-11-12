@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | ready |
+| Status | done |
 | Wave | 1 |
 | Size | S |
 | Depends on | T0 |
@@ -91,12 +91,30 @@ manual check recorded in `STATUS.md`.
 
 ## 8. Acceptance
 
-- [ ] One notification per turn, never one per delta.
-- [ ] Reconnect does not re-notify.
-- [ ] No prompt or message content by default.
-- [ ] Denied permission does not break the turn or log an error loop.
+- [x] One notification per turn, never one per delta.
+- [x] Reconnect does not re-notify.
+- [x] No prompt or message content by default.
+- [x] Denied permission does not break the turn or log an error loop.
 
 ## 9. Risks
 
 `osascript` is a subprocess with a small startup cost. It runs at most once
 per event and never blocks the UI thread.
+
+## 10. Implementation notes (2026-11-11)
+
+- The reconnect-safe event key is the top-level SSE `id` on
+  `session.execution.*` frames; `StreamEvent::ExecutionFinished` now carries
+  it, with `created:{created}` as the fallback for frames without an id.
+- `form.created` is delivered over SSE; the parser maps it to
+  `StreamEvent::FormCreated`, and both it and the command-reply
+  `EngineEvent::FormCreated` upsert into `FormStore` by id.
+- `NotifyPolicy` lives in `harness-views` because it reads live focus and
+  settings; the app owns the `Notifier` backends and the settings file. This
+  keeps the view IO-free as section 4 requires.
+- The e2e simulates a reconnect by re-feeding the same
+  `ExecutionFinished` frame; there is no public hook to force a real SSE
+  reconnect, and dedupe depends only on the frame's stable id.
+- The visual macOS banner was not exercised automatically (that would pop a
+  notification on the developer's desktop). The argv injection contract and
+  the JSON sink path are covered by tests.

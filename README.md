@@ -52,6 +52,25 @@ the input open searchable pickers and persist the choice for the session. A
 picker that fails or finds nothing leaves the typed text untouched.
 
 Not implemented yet: collapsible tool output, Linux packaging, and auto-update.
+
+**Notifications.** When a turn finishes or fails, a permission is requested, or
+the agent asks a question while the window is not focused on that session, the
+OS shows a notification. The body carries no message text by default; previews
+are opt-in and truncated. The right panel has a global switch, per-kind
+switches, and the preview switch. macOS delivery uses `osascript` with the
+title and body passed as argv; a denial turns the feature off and shows an
+inline notice. Settings live in
+`~/Library/Application Support/Rust Harness/notifications.json`.
+
+**Updates.** When a manifest URL is configured, a launch check fetches a
+signed manifest, verifies its Ed25519 signature against the pinned key,
+compares versions numerically, and looks for the artifact matching this OS and
+architecture. It runs on a background thread, at most once per 24 hours, and
+reports only "up to date", "available", or "unavailable"; offline is quiet. An
+available release can be downloaded to the Downloads folder, where its size and
+SHA-256 are verified before the file is revealed. Nothing is ever installed or
+executed silently. A build without a manifest URL makes no request.
+
 The post-M7 sequence — rich composer, conversation control, git review,
 projects/worktrees/multi-run, automation, integrations, terminal, preview — is
 in [`docs/ROADMAP.md`](docs/ROADMAP.md), with executable per-feature specs, a
@@ -88,7 +107,21 @@ The bundle contains the release app binary plus the OpenCode sidecar under
 `Contents/Resources/opencode`, with an `opencode.sha256` manifest written next
 to it. The engine verifies that hash before spawning the sidecar; a mismatch
 stops startup with "The bundled OpenCode binary failed its integrity check".
-Developer builds without a manifest skip the check.
+A packaged sidecar without a manifest fails closed. A developer binary dropped
+next to the app executable may omit the manifest.
+
+Linux releases use the same rule:
+
+```sh
+make package-linux   # dist/rust-harness-<version>-<arch>.AppImage and .deb
+make test-packaging-linux   # extracts both, verifies the sidecar, runs under xvfb
+```
+
+The AppImage and deb place the sidecar in `usr/lib/rust-harness/opencode`; the
+engine finds it relative to `usr/bin/rust-harness`. Neither format sandboxes the
+app: the sidecar must spawn processes and read the project. Both artifacts and
+their `.sha256` files are built by `.github/workflows/release-linux.yml` on
+`ubuntu-24.04` with a pinned `@opencode/cli`.
 
 Local bundles are ad-hoc signed. For a distributable build, set:
 
@@ -134,15 +167,25 @@ integration tests in `crates/engine/tests/sidecar.rs` launch a real
 `RUST_HARNESS_SKIP_E2E=1`), and the streaming test runs only when
 `RUST_HARNESS_MOCK_PROVIDER` points at an OpenAI-compatible mock endpoint. The
 attachment test uses the same mock and also checks that file/agent attachments
-and a model/agent switch reach the server.
+and a model/agent switch reach the server. The notification test runs when
+`RUST_HARNESS_NOTIFY_SINK` names a file and asserts one sink line per turn.
+The Linux packaging smoke test is a script, not a cargo test:
+`RUST_HARNESS_PACKAGING_E2E=1 scripts/e2e-linux.sh` builds or reuses the
+artifacts, verifies the sidecar checksum, and launches both formats under
+`xvfb`.
 
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
 | `RUST_HARNESS_PROJECT` | Project directory (alternative to the positional argument) |
-| `RUST_HARNESS_OPENCODE_BIN` | Explicit path to the `opencode` binary |
+| `RUST_HARNESS_OPENCODE_BIN` | Explicit path to the `opencode` binary; a verified bundled sidecar wins |
 | `RUST_HARNESS_AUTOQUIT_MS` | Exit after N milliseconds; used for smoke tests |
+| `RUST_HARNESS_NOTIFY_SINK` | Append notifications as JSON lines to this file instead of the OS |
+| `RUST_HARNESS_NOTIFY_SETTINGS` | Override the notification settings file path |
+| `RUST_HARNESS_UPDATE_MANIFEST` | Signed update manifest URL; unset means no update check |
+| `RUST_HARNESS_UPDATE_PUBLIC_KEY` | Hex Ed25519 key override; honored by debug builds only |
+| `RUST_HARNESS_UPDATE_SETTINGS` | Override the update settings file path |
 | `RUST_LOG` | Tracing filter (default: `info,harness_engine=debug`) |
 
 The sidecar is launched on `127.0.0.1` with a random port and a random
