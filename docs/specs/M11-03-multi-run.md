@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | blocked (M11-02) |
+| Status | in-progress |
 | Wave | 3 |
 | Size | L |
 | Depends on | M11-02 |

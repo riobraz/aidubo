@@ -409,7 +409,7 @@
         "M11-02"
       ],
       "e2e": "tests/M11-03.rs @ RUST_HARNESS_MOCK_SCRIPTED_PROVIDER",
-      "status": "blocked"
+      "status": "in-progress"
     },
     {
       "id": "G0",
