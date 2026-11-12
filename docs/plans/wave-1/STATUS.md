@@ -454,3 +454,13 @@ The Linux packaging smoke test (`RUST_HARNESS_PACKAGING_E2E=1
 scripts/e2e-linux.sh`) was not run: it needs an `ubuntu-24.04` host with
 `appimagetool`, `dpkg-deb`, and `xvfb`. `release-linux.yml` runs it on that
 runner.
+
+CI reliability (2026-11-11): CI runs were also failing because `macos-14`
+resolved to an unsupported runner, and two e2e flushes surfaced: the global
+OpenCode SQLite schema was being created by two starting servers at once, and
+the `harness-views` tests spawned real engine threads whose event wakers made
+the GPUI test scheduler report cross-thread activity. Starts inside one e2e
+binary are now serialized, and the view tests use an engine stub with a closed
+event channel. Re-verified locally with `cargo test --workspace` (green),
+`cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets -- -D
+warnings`; CI now runs on `macos-latest` with OpenCode 2.2.7.

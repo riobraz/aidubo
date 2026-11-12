@@ -16,3 +16,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+harness-engine = { workspace = true, features = ["test-support"] }

@@ -451,6 +451,26 @@ impl Engine {
         }
     }
 
+    /// An engine with no supervisor, for view tests that apply events by hand.
+    ///
+    /// The event channel is closed, so a view's event pump finishes on the
+    /// calling thread instead of waking from engine threads while the GPUI test
+    /// scheduler asserts thread affinity.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn stub_for_tests() -> Self {
+        let (event_tx, events) = async_channel::unbounded();
+        drop(event_tx);
+        let (commands, command_rx) = async_channel::unbounded();
+        drop(command_rx);
+        Self {
+            events,
+            commands,
+            shutdown: None,
+            thread: None,
+        }
+    }
+
     /// A cloneable stream of engine lifecycle events.
     pub fn events(&self) -> Receiver<EngineEvent> {
         self.events.clone()

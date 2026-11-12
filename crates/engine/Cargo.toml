@@ -20,6 +20,10 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 
+[features]
+# Exposes test doubles that never start a sidecar.
+test-support = []
+
 [dev-dependencies]
 harness-core.workspace = true
 

@@ -5526,7 +5526,7 @@ mod tests {
     use gpui_kit::component::input::InputEvent;
     use gpui_kit::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px};
     use harness_core::{DraftSend, PickerItem, PickerKind, PickerState};
-    use harness_engine::{Engine, EngineConfig, EngineEvent, StreamEvent};
+    use harness_engine::{Engine, EngineEvent, StreamEvent};
 
     use super::WorkspaceView;
 
@@ -5546,8 +5546,7 @@ mod tests {
         cx.update(|cx| cx.set_global(KitTheme::default()));
 
         let project_dir = PathBuf::from("/tmp/rust-harness-revert-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
         let (view, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
                 window,
@@ -5582,8 +5581,7 @@ mod tests {
         cx.update(|cx| cx.set_global(KitTheme::default()));
 
         let project_dir = PathBuf::from("/tmp/rust-harness-fork-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
         let (view, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
                 window,
@@ -5636,8 +5634,7 @@ mod tests {
         cx.update(|cx| cx.set_global(KitTheme::default()));
 
         let project_dir = PathBuf::from("/tmp/rust-harness-diff-panel-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
         let (view, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
                 window,
@@ -5665,8 +5662,7 @@ mod tests {
         cx.update(|cx| cx.set_global(KitTheme::default()));
 
         let project_dir = PathBuf::from("/tmp/rust-harness-titlebar-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
 
         let (_, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
@@ -5704,8 +5700,7 @@ mod tests {
         cx.update(|cx| cx.set_global(KitTheme::default()));
 
         let project_dir = PathBuf::from("/tmp/rust-harness-composer-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
 
         let (view, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
@@ -5761,8 +5756,7 @@ mod tests {
         cx.update(gpui_kit::init);
 
         let project_dir = PathBuf::from("/tmp/rust-harness-composer-enter-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
 
         let (view, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
@@ -5826,8 +5820,7 @@ mod tests {
         cx.update(gpui_kit::init);
 
         let project_dir = PathBuf::from("/tmp/rust-harness-composer-keys-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
 
         let (view, cx) = cx.add_window_view(|window, cx| {
             WorkspaceView::new(
@@ -5906,8 +5899,7 @@ mod tests {
         cx.update(gpui_kit::init);
 
         let project_dir = PathBuf::from("/tmp/rust-harness-notify-delivery-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
         let (notifications_sender, notifications) = async_channel::unbounded();
         let (settings_sender, _settings_receiver) = async_channel::unbounded();
         let (_status_sender, status) = async_channel::unbounded();
@@ -5952,8 +5944,7 @@ mod tests {
         cx.update(gpui_kit::init);
 
         let project_dir = PathBuf::from("/tmp/rust-harness-notify-focus-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
         let (notifications_sender, notifications) = async_channel::unbounded();
         let (settings_sender, _settings_receiver) = async_channel::unbounded();
         let (_status_sender, status) = async_channel::unbounded();
@@ -5994,8 +5985,7 @@ mod tests {
         cx.update(gpui_kit::init);
 
         let project_dir = PathBuf::from("/tmp/rust-harness-notify-denied-test");
-        let engine =
-            Engine::spawn(EngineConfig::new(&project_dir).with_binary("/nonexistent/opencode"));
+        let engine = Engine::stub_for_tests();
         let (notifications_sender, _notifications) = async_channel::unbounded();
         let (settings_sender, settings) = async_channel::unbounded();
         let (_status_sender, status) = async_channel::unbounded();
