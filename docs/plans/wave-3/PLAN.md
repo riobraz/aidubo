@@ -1,6 +1,6 @@
 # Plan — Wave 3 execution
 
-Status: in progress · 2026-11-12
+Status: done · 2026-11-12
 
 ## Goal
 
@@ -101,7 +101,7 @@ five concurrent runs, cross-project groups, and any new server endpoint.
 - [x] Add `crates/engine/tests/M11-03.rs` and run the node gates.
 - [x] Close the spec, update the spec table and graph.
 - [x] G3: workspace gates, the wave's e2e gates, `--validate`, manual checks.
-- [ ] Close the wave: `STATUS.md`, README, PR and merge.
+- [x] Close the wave: `STATUS.md`, README, PR and merge.
 
 ## Implementation notes
 
