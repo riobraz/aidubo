@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
 use futures_util::{SinkExt as _, StreamExt as _};
+use harness_core::TerminalBatch;
 use harness_protocol::{CreatePtyRequest, Envelope, PtyProcess, PtyTicket};
 use reqwest::Method;
 use serde::Deserialize;
@@ -18,10 +19,6 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::EngineEvent;
 use crate::api::{SessionApi, decode_error, ensure_success, network_error};
 
-/// Output is flushed at this interval at the latest.
-pub(crate) const PTY_BATCH_INTERVAL: Duration = Duration::from_millis(16);
-/// Output is flushed immediately once a batch reaches this size.
-pub(crate) const PTY_OUTPUT_LIMIT: usize = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TICKET_HEADER: &str = "x-opencode-ticket";
 const NOT_CONNECTED: &str = "The terminal is not connected.";
@@ -168,44 +165,6 @@ impl PtyLinks {
     }
 }
 
-/// Coalesces socket output into events bounded by time and size.
-#[derive(Debug, Default)]
-pub(crate) struct OutputBatch {
-    bytes: Vec<u8>,
-    started: Option<Instant>,
-}
-
-impl OutputBatch {
-    /// Append bytes and return any full 64 KiB chunks that are ready now.
-    pub(crate) fn push(&mut self, bytes: &[u8], now: Instant) -> Vec<Vec<u8>> {
-        if self.started.is_none() {
-            self.started = Some(now);
-        }
-        self.bytes.extend_from_slice(bytes);
-        let mut chunks = Vec::new();
-        while self.bytes.len() >= PTY_OUTPUT_LIMIT {
-            let tail = self.bytes.split_off(PTY_OUTPUT_LIMIT);
-            chunks.push(std::mem::replace(&mut self.bytes, tail));
-            // The next chunk gets its own full interval.
-            self.started = Some(now);
-        }
-        if self.bytes.is_empty() {
-            self.started = None;
-        }
-        chunks
-    }
-
-    /// When the buffered remainder must be flushed.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
-        self.started.map(|started| started + PTY_BATCH_INTERVAL)
-    }
-
-    pub(crate) fn take(&mut self) -> Vec<u8> {
-        self.started = None;
-        std::mem::take(&mut self.bytes)
-    }
-}
-
 #[derive(Deserialize)]
 struct CursorFrame {
     cursor: u64,
@@ -256,7 +215,7 @@ pub(crate) async fn pump_pty(
     };
 
     let (mut writer, mut reader) = socket.split();
-    let mut batch = OutputBatch::default();
+    let mut batch = TerminalBatch::default();
     let mut deadline: Option<Instant> = None;
     let mut error: Option<&str> = None;
 
@@ -273,21 +232,21 @@ pub(crate) async fn pump_pty(
                 let Some(message) = message else { break };
                 match message {
                     Ok(Message::Text(text)) => {
-                        let chunks = batch.push(text.as_bytes(), Instant::now());
+                        let chunks = batch.push(text.as_bytes(), Instant::now().into());
                         for chunk in chunks {
                             send_output(&event_tx, &id, chunk).await;
                         }
-                        deadline = batch.deadline();
+                        deadline = batch.deadline().map(Instant::from_std);
                     }
                     Ok(Message::Binary(bytes)) => {
                         if let Some(cursor) = parse_cursor(&bytes) {
                             tracing::debug!(pty = %id, cursor, "terminal cursor");
                         } else {
-                            let chunks = batch.push(&bytes, Instant::now());
+                            let chunks = batch.push(&bytes, Instant::now().into());
                             for chunk in chunks {
                                 send_output(&event_tx, &id, chunk).await;
                             }
-                            deadline = batch.deadline();
+                            deadline = batch.deadline().map(Instant::from_std);
                         }
                     }
                     Ok(Message::Close(_)) => break,
@@ -326,23 +285,6 @@ pub(crate) async fn pump_pty(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pty_output_is_batched_by_time_or_size() {
-        let start = Instant::now();
-        let mut batch = OutputBatch::default();
-
-        assert!(batch.push(b"hello", start).is_empty());
-        assert_eq!(batch.deadline(), Some(start + PTY_BATCH_INTERVAL));
-        assert_eq!(batch.take(), b"hello");
-        assert!(batch.deadline().is_none());
-
-        let large = vec![b'x'; PTY_OUTPUT_LIMIT + 10];
-        let chunks = batch.push(&large, start);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].len(), PTY_OUTPUT_LIMIT);
-        assert_eq!(batch.take().len(), 10);
-    }
 
     #[test]
     fn pty_cursor_control_is_not_output() {

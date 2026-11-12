@@ -11,6 +11,7 @@ gpui-kit.workspace = true
 harness-core.workspace = true
 harness-engine.workspace = true
 harness-protocol.workspace = true
+harness-term.workspace = true
 harness-ui.workspace = true
 serde_json.workspace = true
 

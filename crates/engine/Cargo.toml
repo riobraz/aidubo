@@ -25,6 +25,9 @@ tracing.workspace = true
 # Exposes test doubles that never start a sidecar.
 test-support = []
 
+[dev-dependencies]
+harness-term.workspace = true
+
 # Only the M13-01 e2e test spawns this; it is not part of the app bundle.
 [[bin]]
 name = "mcp-echo"
