@@ -51,7 +51,18 @@ appear as removable chips above the input. The model and agent badges below
 the input open searchable pickers and persist the choice for the session. A
 picker that fails or finds nothing leaves the typed text untouched.
 
-Not implemented yet: collapsible tool output, Linux packaging, and auto-update.
+Not implemented yet: collapsible tool output.
+
+**Post-MVP (wave 1).** Projects are first-class: several projects, each with its
+own sessions. A session can queue or steer a prompt, fork at a message, revert
+with stage/preview/commit, and show compaction status with a context meter;
+usage totals and agent forms round out the conversation. The review panel
+shows git status, base, and branches, and renders diffs in a virtualized view.
+Scheduled prompts, OS notifications, MCP servers, provider connections, saved
+permission rules, and plugin status live in the right panel. Distribution adds
+Linux packaging, a redacted diagnostics report, session export/import/stats,
+and the signed update check described below. The PTY transport client is in
+place; the terminal UI is M14-03.
 
 **Notifications.** When a turn finishes or fails, a permission is requested, or
 the agent asks a question while the window is not focused on that session, the

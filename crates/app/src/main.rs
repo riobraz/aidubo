@@ -33,6 +33,7 @@ fn main() {
         );
     }
     let saved_projects = restored.projects;
+    let saved_worktrees = restored.worktrees;
     let saved_notice = restored.notice;
 
     let (projects_sender, projects_receiver) = async_channel::unbounded();
@@ -102,6 +103,7 @@ fn main() {
                     cx,
                 )
                 .restore_saved_projects(saved_projects, saved_notice)
+                .restore_saved_worktrees(saved_worktrees)
                 .persist_projects_with(Arc::new(move |snapshot| {
                     if projects_sender.try_send(snapshot).is_err() {
                         tracing::warn!("could not queue the project list for saving");

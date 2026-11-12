@@ -53,6 +53,22 @@ pub enum EngineEvent {
     SessionRenamed { id: String, title: String },
     /// A session was deleted on the server.
     SessionDeleted { id: String },
+    /// The active project's worktrees.
+    WorktreesLoaded {
+        directory: String,
+        result: Result<Vec<harness_protocol::Worktree>, String>,
+    },
+    /// The server created a worktree at a path it chose.
+    WorktreeCreated {
+        worktree: harness_protocol::Worktree,
+    },
+    /// A worktree was removed from the filesystem and the server list.
+    WorktreeRemoved { directory: String },
+    /// A session was moved to another directory.
+    SessionMoved {
+        session_id: String,
+        directory: String,
+    },
     /// The session's pending forms.
     FormsLoaded {
         session_id: String,
@@ -762,6 +778,60 @@ fn canonical_project_directory(directory: &str) -> Result<String, String> {
     Ok(canonical)
 }
 
+/// The server project id for a canonical directory.
+///
+/// A project added in the UI exists locally before the server sees it; the
+/// worktree endpoints need the opaque id, so the first worktree action on such
+/// a folder explains how to materialize it instead of guessing an id.
+async fn resolve_server_project_id(api: &SessionApi, directory: &str) -> Result<String, String> {
+    let projects = api.projects().await?;
+    projects
+        .into_iter()
+        .find(|project| project.canonical == directory)
+        .map(|project| project.id.0)
+        .ok_or_else(|| {
+            "This project has no server record yet. Create a session in it first.".to_string()
+        })
+}
+
+/// List sessions for the project root and every additional directory, merged by
+/// session id. A worktree that disappeared mid-request is skipped with a log
+/// entry rather than failing the whole sidebar.
+async fn list_sessions_across(
+    api: &SessionApi,
+    root: &str,
+    directories: &[String],
+) -> Result<Vec<Session>, String> {
+    let mut sessions = api.list(root).await?;
+    let mut seen: std::collections::HashSet<String> =
+        sessions.iter().map(|session| session.id.clone()).collect();
+    for extra in directories {
+        let extra = match canonical_project_directory(extra) {
+            Ok(directory) => directory,
+            Err(message) => {
+                tracing::debug!(%message, directory = %extra, "skipping worktree session list");
+                continue;
+            }
+        };
+        if extra == root {
+            continue;
+        }
+        match api.list(&extra).await {
+            Ok(more) => {
+                for session in more {
+                    if seen.insert(session.id.clone()) {
+                        sessions.push(session);
+                    }
+                }
+            }
+            Err(message) => {
+                tracing::debug!(directory = %extra, %message, "could not list worktree sessions");
+            }
+        }
+    }
+    Ok(sessions)
+}
+
 async fn run_command(
     api: &mut SessionApi,
     command: EngineCommand,
@@ -1350,6 +1420,141 @@ async fn run_command(
                     },
                 }),
             }
+        }
+        EngineCommandKind::ListWorktrees { request_id: _ } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = async {
+                    let project_id = resolve_server_project_id(api, &call_directory).await?;
+                    api.worktrees(&project_id).await
+                } => result,
+            };
+            event(EngineEvent::WorktreesLoaded {
+                directory: call_directory,
+                result,
+            })
+        }
+        EngineCommandKind::CreateWorktree { from, branch, name } => {
+            let call_directory = directory.clone();
+            let branch = branch.trim().to_owned();
+            let name = name.trim().to_owned();
+            let name = if name.is_empty() {
+                branch.clone()
+            } else {
+                name
+            };
+            if name.is_empty() {
+                return event(EngineEvent::CommandFailed {
+                    message: "A worktree name is required.".into(),
+                });
+            }
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = async {
+                    let project_id = resolve_server_project_id(api, &call_directory).await?;
+                    let from = canonical_project_directory(&from).unwrap_or(call_directory.clone());
+                    let request = harness_protocol::CreateWorktreeRequest {
+                        project_id,
+                        from,
+                        branch: (!branch.is_empty()).then_some(branch),
+                        directory: None,
+                        name,
+                    };
+                    api.create_worktree(&request).await
+                } => result,
+            };
+            event(match result {
+                Ok(worktree) => {
+                    tracing::debug!(worktree = %worktree.directory, "created worktree");
+                    EngineEvent::WorktreeCreated { worktree }
+                }
+                Err(message) => EngineEvent::CommandFailed {
+                    message: format!("Could not create the worktree: {message}"),
+                },
+            })
+        }
+        EngineCommandKind::RemoveWorktree {
+            directory: worktree,
+            force,
+        } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = async {
+                    let project_id = resolve_server_project_id(api, &call_directory).await?;
+                    let request = harness_protocol::RemoveWorktreeRequest {
+                        project_id,
+                        directory: worktree.clone(),
+                        force,
+                    };
+                    api.remove_worktree(&request).await
+                } => result,
+            };
+            event(match result {
+                Ok(()) => {
+                    tracing::debug!(worktree = %worktree, force, "removed worktree");
+                    EngineEvent::WorktreeRemoved {
+                        directory: worktree,
+                    }
+                }
+                Err(message) => EngineEvent::CommandFailed {
+                    message: format!("Could not remove the worktree: {message}"),
+                },
+            })
+        }
+        EngineCommandKind::RefreshWorktrees { request_id: _ } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = async {
+                    let project_id = resolve_server_project_id(api, &call_directory).await?;
+                    api.refresh_worktrees().await?;
+                    api.worktrees(&project_id).await
+                } => result,
+            };
+            event(EngineEvent::WorktreesLoaded {
+                directory: call_directory,
+                result,
+            })
+        }
+        EngineCommandKind::MoveSession {
+            session_id,
+            directory: target,
+        } => {
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = async {
+                    let target = canonical_project_directory(&target)?;
+                    api.move_session(&session_id, &target).await?;
+                    Ok::<String, String>(target)
+                } => result,
+            };
+            event(match result {
+                Ok(directory) => {
+                    tracing::debug!(session = %session_id, %directory, "moved session");
+                    EngineEvent::SessionMoved {
+                        session_id,
+                        directory,
+                    }
+                }
+                Err(message) => EngineEvent::CommandFailed {
+                    message: format!("Could not move the session: {message}"),
+                },
+            })
+        }
+        EngineCommandKind::ListSessionsAcross { directories } => {
+            let call_directory = directory.clone();
+            let result = tokio::select! {
+                _ = &mut *shutdown => return CommandResult::Shutdown,
+                result = list_sessions_across(api, &call_directory, &directories) => result,
+            };
+            event(match result {
+                Ok(sessions) => EngineEvent::SessionsLoaded { sessions },
+                Err(message) => EngineEvent::CommandFailed {
+                    message: format!("Could not load sessions: {message}"),
+                },
+            })
         }
         EngineCommandKind::LoadTranscript { session_id } => {
             let call_id = session_id.clone();

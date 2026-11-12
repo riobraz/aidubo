@@ -17,9 +17,10 @@ use harness_core::{
     NotifyPolicy, NotifySettings, ParsedDiff, PermissionQueue, PickerEffect, PickerItem,
     PickerKind, PickerState, PluginStore, ProjectDrafts, ProjectStore, PromptDraft, ProviderStore,
     RevertStore, SNIPPETS, SavedPermissionStore, ScheduleStore, SessionStore, ToolCall, ToolStatus,
-    TranscriptStore, TransferStore, UsageStore, VcsStore, describe_when, failure_reason, flatten,
-    import_error, next_run_label, now_ms, parse_patch, path_to_file_uri, relative_time, url_host,
-    validate_duration, validate_import, visible_range,
+    TranscriptStore, TransferStore, UsageStore, VcsStore, WorktreeStore, describe_when,
+    failure_reason, flatten, group_sessions_by_directory, import_error, next_run_label, now_ms,
+    parse_patch, path_to_file_uri, relative_time, sessions_in_directory, url_host,
+    validate_base_ref, validate_duration, validate_import, visible_range,
 };
 use harness_engine::{CatalogData, CatalogKind, Engine, EngineEvent, PermissionReply, StreamEvent};
 use harness_protocol::{
@@ -154,6 +155,8 @@ gpui_kit::actions!(
 pub struct ProjectSnapshot {
     pub projects: Vec<String>,
     pub active: Option<String>,
+    /// Worktree directories this app created.
+    pub worktrees: Vec<String>,
 }
 
 /// Where the app sends snapshots; the view never touches the disk itself.
@@ -169,6 +172,17 @@ pub struct WorkspaceView {
     drafts: ProjectDrafts<PromptDraft>,
     project_dir: PathBuf,
     projects_sink: Option<ProjectSink>,
+    /// Worktrees of the active project plus the app-owned registry.
+    worktrees: WorktreeStore,
+    /// Whether the worktree panel is expanded in the sidebar.
+    worktrees_open: bool,
+    /// Whether the create-worktree form is open.
+    worktree_form_open: bool,
+    worktree_error: Option<String>,
+    worktree_branch: Entity<InputState>,
+    worktree_name: Entity<InputState>,
+    /// Worktree directory awaiting remove confirmation.
+    pending_worktree_remove: Option<String>,
     /// Startup notice about saved projects that could not be reopened.
     projects_notice: Option<String>,
     /// Last command error, shown until dismissed or superseded.
@@ -345,6 +359,9 @@ impl WorkspaceView {
         let schedule_when = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 5 minutes"));
         let schedule_ends =
             cx.new(|cx| InputState::new(window, cx).placeholder("Run limit (optional)"));
+        let worktree_branch =
+            cx.new(|cx| InputState::new(window, cx).placeholder("base branch or ref (optional)"));
+        let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("worktree name"));
         let form_subscription =
             cx.subscribe_in(&form_input, window, |this, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -386,6 +403,13 @@ impl WorkspaceView {
             drafts: ProjectDrafts::default(),
             project_dir,
             projects_sink: None,
+            worktrees: WorktreeStore::default(),
+            worktrees_open: false,
+            worktree_form_open: false,
+            worktree_error: None,
+            worktree_branch,
+            worktree_name,
+            pending_worktree_remove: None,
             projects_notice: None,
             error: None,
             renaming: None,
@@ -465,6 +489,14 @@ impl WorkspaceView {
         self
     }
 
+    /// Merge the worktrees the app created in earlier runs, so one the server
+    /// forgot can still be removed.
+    pub fn restore_saved_worktrees(mut self, worktrees: Vec<String>) -> Self {
+        self.worktrees.set_registry(worktrees);
+        self.persist_projects();
+        self
+    }
+
     /// Attach the app-owned snapshot sink and record the current state once.
     pub fn persist_projects_with(mut self, sink: ProjectSink) -> Self {
         self.projects_sink = Some(sink);
@@ -487,6 +519,7 @@ impl WorkspaceView {
                 .projects
                 .active()
                 .map(|project| project.canonical.clone()),
+            worktrees: self.worktrees.created_by_app().to_vec(),
         };
         sink(snapshot);
     }
@@ -504,6 +537,7 @@ impl WorkspaceView {
                 self.engine.load_mcp(self.directory(), 1);
                 self.engine.load_providers(self.directory(), 1);
                 self.engine.load_integrations(self.directory(), 1);
+                self.reload_worktrees();
                 self.status = EngineStatus::Ready { version, port };
                 for (request_id, kind) in [
                     (1, CatalogKind::Commands),
@@ -751,6 +785,55 @@ impl WorkspaceView {
                 self.error = None;
                 self.follow_selection();
             }
+            EngineEvent::WorktreesLoaded { directory, result } => {
+                if directory != self.directory() {
+                    return;
+                }
+                match result {
+                    Ok(worktrees) => {
+                        let applied =
+                            self.worktrees
+                                .apply_snapshot(&directory, worktrees, |path| {
+                                    std::path::Path::new(path).is_dir()
+                                });
+                        if applied {
+                            self.worktree_error = None;
+                            self.reload_sessions_across();
+                        }
+                    }
+                    Err(message) => self.worktree_error = Some(message),
+                }
+            }
+            EngineEvent::WorktreeCreated { worktree } => {
+                self.worktrees.track_created(worktree);
+                self.worktrees_open = true;
+                self.worktree_form_open = false;
+                self.worktree_error = None;
+                self.persist_projects();
+                self.reload_sessions_across();
+            }
+            EngineEvent::WorktreeRemoved { directory } => {
+                let removed: Vec<String> =
+                    sessions_in_directory(self.sessions.sessions(), &directory)
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect();
+                for id in &removed {
+                    self.sessions.remove(id);
+                }
+                self.worktrees.remove(&directory);
+                self.pending_worktree_remove = None;
+                self.worktree_error = None;
+                self.persist_projects();
+                self.reload_sessions_across();
+                if removed
+                    .iter()
+                    .any(|id| self.transcript.session_id() == Some(id.as_str()))
+                {
+                    self.follow_selection();
+                }
+            }
+            EngineEvent::SessionMoved { .. } => self.reload_sessions_across(),
             EngineEvent::SessionExported {
                 session_id,
                 path,
@@ -914,6 +997,8 @@ impl WorkspaceView {
                     }
                 }
                 StreamEvent::FormCreated { form } => self.forms.upsert(form),
+                StreamEvent::WorktreesChanged => self.reload_worktrees(),
+                StreamEvent::SessionMoved { .. } => self.reload_sessions_across(),
                 event => {
                     let finished = matches!(event, StreamEvent::ExecutionFinished { .. });
                     if self.transcript.apply_stream(event) && finished {
@@ -975,6 +1060,7 @@ impl WorkspaceView {
                 // Events may have been missed while disconnected.
                 self.follow_selection();
                 self.engine.load_mcp(self.directory(), 3);
+                self.reload_worktrees();
             }
             EngineEvent::StreamDisconnected => {
                 self.stream_connected = false;
@@ -996,6 +1082,7 @@ impl WorkspaceView {
             | EngineEvent::PtyError { .. } => {}
             EngineEvent::CommandFailed { message } => {
                 self.permission_in_flight = None;
+                self.pending_worktree_remove = None;
                 self.error = Some(message);
                 // A failed model/agent change may have left an optimistic badge;
                 // the server snapshot is authoritative.
@@ -1137,6 +1224,12 @@ impl WorkspaceView {
         self.diff_rows.clear();
         self.selected_file = None;
         self.error = None;
+        let directory = self.directory();
+        self.worktrees.begin(directory);
+        self.worktrees_open = false;
+        self.worktree_form_open = false;
+        self.worktree_error = None;
+        self.pending_worktree_remove = None;
     }
 
     /// Reload the server-backed lists that are scoped to a directory.
@@ -1155,6 +1248,104 @@ impl WorkspaceView {
         ] {
             self.engine.list_catalog(self.directory(), request_id, kind);
         }
+        self.reload_worktrees();
+    }
+
+    fn reload_worktrees(&mut self) {
+        let directory = self.directory();
+        self.worktrees.begin(directory.clone());
+        self.engine.load_worktrees(directory, 1);
+    }
+
+    /// Load sessions from the project root and every known worktree in one
+    /// snapshot, so the sidebar can group them by directory.
+    fn reload_sessions_across(&mut self) {
+        let directory = self.directory();
+        let directories: Vec<String> = self
+            .worktrees
+            .entries()
+            .iter()
+            .map(|entry| entry.directory.clone())
+            .collect();
+        if directories.is_empty() {
+            self.engine.refresh_sessions(directory);
+        } else {
+            self.engine.list_sessions_across(directory, directories);
+        }
+    }
+
+    fn open_worktree_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.worktrees_open = true;
+        self.worktree_form_open = true;
+        self.worktree_error = None;
+        self.pending_worktree_remove = None;
+        self.worktree_branch
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.worktree_name
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.worktree_branch
+            .update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    fn create_worktree(&mut self, cx: &mut Context<Self>) {
+        let base_ref = self.worktree_branch.read(cx).value().trim().to_owned();
+        if let Err(message) = validate_base_ref(&base_ref) {
+            self.worktree_error = Some(message);
+            cx.notify();
+            return;
+        }
+        let name = self.worktree_name.read(cx).value().trim().to_owned();
+        let name = if name.is_empty() {
+            base_ref.clone()
+        } else {
+            name
+        };
+        if name.is_empty() {
+            self.worktree_error = Some("A worktree name is required.".into());
+            cx.notify();
+            return;
+        }
+        self.worktree_error = None;
+        let directory = self.directory();
+        if !self
+            .engine
+            .create_worktree(directory.clone(), directory, base_ref, name)
+        {
+            self.worktree_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn remove_worktree(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(worktree) = self.pending_worktree_remove.clone() else {
+            return;
+        };
+        self.worktree_error = None;
+        if !self
+            .engine
+            .remove_worktree(self.directory(), worktree, force)
+        {
+            self.worktree_error = Some("The engine is not running.".into());
+        }
+        cx.notify();
+    }
+
+    fn create_session_in(
+        &mut self,
+        directory: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_current_draft();
+        self.renaming = None;
+        self.pending_delete = None;
+        self.error = None;
+        self.clear_composer(window, cx);
+        if !self.engine.create_session(directory) {
+            self.error = Some("The engine is not running.".into());
+        }
+        cx.notify();
     }
 
     /// Point the transcript at the selected session and reload it.
@@ -3926,7 +4117,60 @@ impl WorkspaceView {
             .px_2()
             .py_2();
 
-        if self.sessions.is_empty() {
+        let project_directory = self.directory();
+        let worktree_directories: Vec<String> = self
+            .worktrees
+            .entries()
+            .iter()
+            .map(|entry| entry.directory.clone())
+            .collect();
+
+        if !worktree_directories.is_empty() {
+            for group in group_sessions_by_directory(
+                self.sessions.sessions(),
+                &project_directory,
+                &worktree_directories,
+            ) {
+                let header = if group.directory == project_directory {
+                    "Project root".to_owned()
+                } else {
+                    std::path::Path::new(&group.directory)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(group.directory.as_str())
+                        .to_owned()
+                };
+                list = list.child(
+                    div()
+                        .px_3()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .child(header),
+                );
+                if group.session_ids.is_empty() {
+                    list = list.child(
+                        div()
+                            .px_3()
+                            .pb_1()
+                            .text_xs()
+                            .text_color(theme.muted)
+                            .child("No sessions"),
+                    );
+                }
+                for id in group.session_ids {
+                    if let Some(session) = self
+                        .sessions
+                        .sessions()
+                        .iter()
+                        .find(|session| session.id == id)
+                    {
+                        list = list.child(self.session_row(session, theme, cx));
+                    }
+                }
+            }
+        } else if self.sessions.is_empty() {
             list = list.child(
                 div()
                     .p_3()
@@ -3953,6 +4197,7 @@ impl WorkspaceView {
             .border_r_1()
             .border_color(theme.border)
             .child(self.render_project_switcher(theme, cx))
+            .child(self.render_worktrees(theme, cx))
             .child(
                 div()
                     .flex()
@@ -4032,6 +4277,257 @@ impl WorkspaceView {
                     )
                     .child(div().text_xs().text_color(theme.muted).child(detail)),
             )
+    }
+
+    fn render_worktrees(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let ready = self.status.is_ready();
+        let count = self.worktrees.len();
+        let toggle_label = if self.worktrees_open {
+            format!("▾ Worktrees ({count})")
+        } else {
+            format!("▸ Worktrees ({count})")
+        };
+
+        let mut section = div().flex().flex_col().gap_1().px_2().pt_2().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_1()
+                .child(
+                    div()
+                        .id("worktrees-toggle")
+                        .flex_1()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(theme.muted)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.worktrees_open = !this.worktrees_open;
+                            if !this.worktrees_open {
+                                this.worktree_form_open = false;
+                            }
+                            cx.notify();
+                        }))
+                        .child(toggle_label),
+                )
+                .child(
+                    Button::new("worktree-add")
+                        .small()
+                        .ghost()
+                        .label("+")
+                        .disabled(!ready)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_worktree_form(window, cx)),
+                        ),
+                ),
+        );
+
+        if !self.worktrees_open {
+            return section;
+        }
+
+        if let Some(error) = &self.worktree_error {
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child(error.clone()),
+            );
+        }
+
+        if self.worktrees.is_loading() && self.worktrees.is_empty() {
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .child("Loading worktrees…"),
+            );
+        }
+
+        for entry in self.worktrees.entries() {
+            let directory = entry.directory.clone();
+            let new_directory = entry.directory.clone();
+            let remove_directory = entry.directory.clone();
+            let session_count = sessions_in_directory(self.sessions.sessions(), &directory).len();
+            let detail = match (&entry.strategy, entry.orphan) {
+                (_, true) => "orphan".to_owned(),
+                (Some(strategy), false) => strategy.clone(),
+                (None, false) => String::new(),
+            };
+
+            section =
+                section.child(
+                    div()
+                        .id(SharedString::from(format!("worktree-{directory}")))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .child(entry.label().to_owned()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted)
+                                        .child(format!("{session_count} sessions")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_xs()
+                                        .text_color(theme.muted)
+                                        .child(detail),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "worktree-new-{directory}"
+                                    )))
+                                    .small()
+                                    .ghost()
+                                    .label("New session")
+                                    .disabled(!ready)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.create_session_in(new_directory.clone(), window, cx);
+                                    })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "worktree-remove-{directory}"
+                                    )))
+                                    .small()
+                                    .ghost()
+                                    .label("Remove")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.pending_worktree_remove =
+                                            Some(remove_directory.clone());
+                                        this.worktree_error = None;
+                                        cx.notify();
+                                    })),
+                                ),
+                        ),
+                );
+        }
+
+        if let Some(pending) = self.pending_worktree_remove.clone() {
+            let label = std::path::Path::new(&pending)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(pending.as_str())
+                .to_owned();
+            let session_count = sessions_in_directory(self.sessions.sessions(), &pending).len();
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .mx_2()
+                    .mb_2()
+                    .p_2()
+                    .rounded_md()
+                    .bg(theme.border)
+                    .child(div().text_xs().child(format!(
+                        "Remove {label}? {session_count} session(s) will be closed."
+                    )))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("worktree-remove-confirm")
+                                    .small()
+                                    .label("Remove")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.remove_worktree(false, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("worktree-remove-force")
+                                    .small()
+                                    .ghost()
+                                    .label("Force")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.remove_worktree(true, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("worktree-remove-cancel")
+                                    .small()
+                                    .ghost()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.pending_worktree_remove = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+        }
+
+        if self.worktree_form_open {
+            section = section
+                .child(Input::new(&self.worktree_branch).w_full())
+                .child(Input::new(&self.worktree_name).w_full())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(theme.muted)
+                                .child("Empty ref uses HEAD; the server picks the path."),
+                        )
+                        .child(
+                            Button::new("worktree-create")
+                                .small()
+                                .primary()
+                                .label("Create")
+                                .disabled(!ready)
+                                .on_click(cx.listener(|this, _, _, cx| this.create_worktree(cx))),
+                        )
+                        .child(
+                            Button::new("worktree-create-cancel")
+                                .small()
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.worktree_form_open = false;
+                                    this.worktree_error = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+        }
+
+        section
     }
 
     fn session_row(

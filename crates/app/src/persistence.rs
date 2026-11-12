@@ -16,6 +16,9 @@ pub const PROJECTS_ENV: &str = "RUST_HARNESS_PROJECTS";
 struct StoredProjects {
     projects: Vec<String>,
     active: Option<String>,
+    /// Worktree directories this app created, so an orphan can be offered for
+    /// removal even when the server forgot it.
+    worktrees: Vec<String>,
 }
 
 /// What the workspace should start with after dropping unavailable folders.
@@ -23,6 +26,7 @@ struct StoredProjects {
 pub struct RestoredProjects {
     pub projects: Vec<String>,
     pub active: Option<String>,
+    pub worktrees: Vec<String>,
     pub notice: Option<String>,
 }
 
@@ -60,6 +64,15 @@ fn restore_from(path: &Path) -> RestoredProjects {
     let saved_active = stored.active;
     let mut restored = RestoredProjects::default();
     let mut dropped = 0usize;
+
+    for saved in stored.worktrees {
+        if !Path::new(&saved).is_dir() {
+            continue;
+        }
+        if !restored.worktrees.contains(&saved) {
+            restored.worktrees.push(saved);
+        }
+    }
 
     for saved in stored.projects {
         match std::fs::canonicalize(&saved) {
@@ -119,6 +132,7 @@ fn save_to(path: &Path, snapshot: &ProjectSnapshot) -> Result<(), String> {
     let stored = StoredProjects {
         projects: snapshot.projects.clone(),
         active: snapshot.active.clone(),
+        worktrees: snapshot.worktrees.clone(),
     };
     let raw = serde_json::to_vec_pretty(&stored)
         .map_err(|_| "could not encode the project list".to_string())?;
@@ -171,6 +185,7 @@ mod tests {
         let snapshot = ProjectSnapshot {
             projects: vec![first.canonical(), second.canonical()],
             active: Some(second.canonical()),
+            worktrees: vec![],
         };
 
         save_to(&file, &snapshot).expect("save project list");
@@ -190,6 +205,7 @@ mod tests {
         let snapshot = ProjectSnapshot {
             projects: vec![existing.canonical(), missing],
             active: None,
+            worktrees: vec![],
         };
 
         save_to(&file, &snapshot).expect("save project list");
@@ -215,12 +231,36 @@ mod tests {
         let snapshot = ProjectSnapshot {
             projects: vec![first.canonical()],
             active: Some(data.path.join("gone").to_string_lossy().into_owned()),
+            worktrees: vec![],
         };
 
         save_to(&file, &snapshot).expect("save project list");
         let restored = restore_from(&file);
 
         assert_eq!(restored.active, Some(first.canonical()));
+    }
+
+    #[test]
+    fn worktree_registry_round_trips_and_drops_missing_paths() {
+        let data = TempDir::new("worktrees");
+        let project = TempDir::new("worktrees-project");
+        let worktree = TempDir::new("worktrees-checkout");
+        let file = data.path.join("projects.json");
+        let missing = data
+            .path
+            .join("gone-worktree")
+            .to_string_lossy()
+            .into_owned();
+        let snapshot = ProjectSnapshot {
+            projects: vec![project.canonical()],
+            active: None,
+            worktrees: vec![worktree.canonical(), missing],
+        };
+
+        save_to(&file, &snapshot).expect("save project list");
+        let restored = restore_from(&file);
+
+        assert_eq!(restored.worktrees, vec![worktree.canonical()]);
     }
 
     #[test]
@@ -242,6 +282,7 @@ mod tests {
         let snapshot = ProjectSnapshot {
             projects: vec![link.to_string_lossy().into_owned()],
             active: None,
+            worktrees: vec![],
         };
 
         save_to(&file, &snapshot).expect("save project list");
