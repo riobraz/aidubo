@@ -1,10 +1,16 @@
 # Status — Wave 1 execution
 
-Status: in progress
+Status: done
 
 Last updated: 2026-11-12
 
 ## Completed
+
+- 2026-11-12 — **Wave 1 merged to `main`.** PR #2
+  (https://github.com/riobraz/aidubo/pull/2) passed the CI `test` check and was
+  squash-merged as `297b2eb`; the meta branch `wave-1` is retained, as with
+  wave 0. The Linux packaging smoke test still has not run on this macOS host;
+  `release-linux.yml` runs it on `ubuntu-24.04`.
 
 - 2026-11-12 — **Crash fix: duplicate a11y node id in the Providers section.**
   Opening a project panicked in debug builds with `Duplicate a11y node id` once
@@ -302,7 +308,8 @@ Last updated: 2026-11-12
 - Gate G1 ran on 2026-11-11: formatting, clippy, the full workspace suite, the
   sidecar e2e gate, and graph validation pass. The Linux packaging smoke test
   cannot run on this macOS host; `release-linux.yml` runs it on `ubuntu-24.04`.
-  The branch `wave-1` is ready for review and merge on the macOS CI gate.
+  Wave 1 is merged; the next execution unit is wave 2
+  (`docs/plans/wave-2/PLAN.md`).
 
 ## Blockers
 

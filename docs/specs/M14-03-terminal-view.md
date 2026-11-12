@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | blocked (M14-01, M14-02) |
+| Status | ready |
 | Wave | 2 |
 | Size | L |
 | Depends on | M14-01, M14-02 |

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| Status | blocked (M9-06) |
+| Status | ready |
 | Wave | 2 |
 | Size | L |
 | Depends on | M9-06, T0 |
