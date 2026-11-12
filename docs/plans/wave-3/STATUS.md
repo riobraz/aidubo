@@ -14,8 +14,9 @@ Last updated: 2026-11-12
 
 ## In progress / next
 
-- M11-03 (multi-run and comparison): starting with the pure `harness-core`
-  model and its four tests, then the engine executor, persistence, view, and
+- M11-03 (multi-run and comparison): the pure `harness-core` model
+  (`crates/core/src/runs.rs`) and its four spec tests are in. Next the engine
+  executor behind the five-run cap, then persistence, the compare view, and
   the three-run e2e.
 
 ## Blockers

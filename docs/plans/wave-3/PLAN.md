@@ -92,8 +92,8 @@ five concurrent runs, cross-project groups, and any new server endpoint.
 
 ## Steps
 
-- [ ] M11-03: claim the spec and open this plan.
-- [ ] Add `harness_core::runs` and the four core tests.
+- [x] M11-03: claim the spec and open this plan.
+- [x] Add `harness_core::runs` and the four core tests.
 - [ ] Add protocol types if the spec needs them and the engine executor with
       the concurrency-cap test.
 - [ ] Add app-local group persistence and relaunch interruption.
